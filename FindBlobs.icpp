@@ -1,0 +1,166 @@
+/***********************************************************************
+FindBlobs - Helper function to extract all eight-connected blobs of
+pixels from a frame that match an arbitrary property.
+Copyright (c) 2010-2012 Oliver Kreylos
+***********************************************************************/
+
+#define FINDBLOBS_IMPLEMENTATION
+
+#include "FindBlobs.h"
+
+namespace {
+
+template <class PixelParam>
+struct LineBlob // Helper structure to assemble blobs one line at a time
+	{
+	/* Embedded classes: */
+	public:
+	typedef PixelParam Pixel; // Underlying pixel type
+	
+	/* Elements: */
+	public:
+	int x1,x2;
+	int y;
+	unsigned int parent,rank;
+	int min[2],max[2];
+	double sumX,sumY,sumW;
+	BlobProperty<Pixel> blobProperty;
+	
+	/* Methods: */
+	void merge(const LineBlob& other)
+		{
+		for(int i=0;i<2;++i)
+			{
+			if(min[i]>other.min[i])
+				min[i]=other.min[i];
+			if(max[i]<other.max[i])
+				max[i]=other.max[i];
+			}
+		sumX+=other.sumX;
+		sumY+=other.sumY;
+		sumW+=other.sumW;
+		blobProperty.merge(other.blobProperty);
+		}
+	};
+
+}
+
+template <class PixelParam,class PixelPropertyParam>
+inline
+std::vector<Blob<PixelParam> >
+findBlobs(const int size[2],
+	const PixelParam* frame,
+	const PixelPropertyParam& property)
+	{
+	/* Create a list of line blobs: */
+	std::vector<LineBlob<PixelParam> > lineBlobs;
+	unsigned int numLineBlobs=0; // Number of line blobs in the current list
+	unsigned int lastLineStart=0; // Index of first line blob for the previous pixel row
+	unsigned int lastLineEnd=0; // Index one after last line blob for the previous pixel row
+	
+	/* Process all pixel rows: */
+	const PixelParam* frameRowPtr=frame;
+	for(int y=0;y<size[1];++y,frameRowPtr+=size[0])
+		{
+		/* Find all line blobs on the current line: */
+		int x=0;
+		const PixelParam* framePtr=frameRowPtr;
+		while(x<size[0])
+			{
+			/* Skip non-property pixels: */
+			while(x<size[0]&&!property(x,y,*framePtr))
+				{
+				++x;
+				++framePtr;
+				}
+			if(x>=size[0])
+				break;
+			
+			/* Collect a new line blob: */
+			LineBlob<PixelParam> lb;
+			lb.x1=x;
+			lb.blobProperty.addPixel(x,y,*framePtr);
+			++x;
+			++framePtr;
+			while(x<size[0]&&property(x,y,*framePtr))
+				{
+				lb.blobProperty.addPixel(x,y,*framePtr);
+				++x;
+				++framePtr;
+				}
+			lb.x2=x;
+			lb.y=y;
+			lb.parent=numLineBlobs;
+			lb.rank=0;
+			lb.min[0]=lb.x1;
+			lb.min[1]=y;
+			lb.max[0]=lb.x2;
+			lb.max[1]=y+1;
+			lb.sumW=double(lb.x2-lb.x1);
+			lb.sumX=double(lb.x1+lb.x2-1)*lb.sumW*0.5;
+			lb.sumY=double(y)*lb.sumW;
+			lineBlobs.push_back(lb);
+			++numLineBlobs;
+			
+			/* Finish the line blob: */
+			++x;
+			++framePtr;
+			
+			/* Merge the new line blob with any line blobs it touches from the previous line: */
+			for(unsigned int i=lastLineStart;i<lastLineEnd;++i)
+				{
+				if(lineBlobs[i].x1<=lb.x2&&lineBlobs[i].x2>=lb.x1) // Check detects eight-connected blobs
+					{
+					/* Merge the two blobs: */
+					unsigned int root1=i;
+					while(root1!=lineBlobs[root1].parent)
+						root1=lineBlobs[root1].parent;
+					unsigned int root2=numLineBlobs-1;
+					while(root2!=lineBlobs[root2].parent)
+						root2=lineBlobs[root2].parent;
+					if(root1!=root2)
+						{
+						if(lineBlobs[root1].rank>lineBlobs[root2].rank)
+							{
+							lineBlobs[root2].parent=root1;
+							lineBlobs[root1].merge(lineBlobs[root2]);
+							}
+						else
+							{
+							lineBlobs[root1].parent=root2;
+							if(lineBlobs[root1].rank==lineBlobs[root2].rank)
+								++lineBlobs[root2].rank;
+							lineBlobs[root2].merge(lineBlobs[root1]);
+							}
+						}
+					}
+				}
+			}
+		
+		/* Go to the next line: */
+		lastLineStart=lastLineEnd;
+		lastLineEnd=numLineBlobs;
+		}
+	
+	/* Convert all line blobs that are their own parents into "real" blobs: */
+	std::vector<Blob<PixelParam> > result;
+	for(unsigned int i=0;i<numLineBlobs;++i)
+		{
+		/* Check if the line blob is a root and not just a single pixel: */
+		if(lineBlobs[i].parent==i&&lineBlobs[i].sumW>0.0)
+			{
+			Blob<PixelParam> b;
+			b.x=(lineBlobs[i].sumX+lineBlobs[i].sumW*0.5)/lineBlobs[i].sumW;
+			b.y=(lineBlobs[i].sumY+lineBlobs[i].sumW*0.5)/lineBlobs[i].sumW;
+			for(int j=0;j<2;++j)
+				{
+				b.min[j]=lineBlobs[i].min[j];
+				b.max[j]=lineBlobs[i].max[j];
+				}
+			b.blobProperty=lineBlobs[i].blobProperty;
+			result.push_back(b);
+			}
+		}
+	
+	return result;
+	}
