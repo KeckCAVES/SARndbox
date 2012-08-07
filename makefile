@@ -1,6 +1,6 @@
 ########################################################################
 # Makefile for the Augmented Reality Sandbox.
-# Copyright (c) 2012-2018 Oliver Kreylos
+# Copyright (c) 2012 Oliver Kreylos
 #
 # This file is part of the WhyTools Build Environment.
 # 
@@ -24,10 +24,7 @@
 # matches the default Vrui installation; if Vrui's installation
 # directory was changed during Vrui's installation, the directory below
 # must be adapted.
-VRUI_MAKEDIR := /usr/local/share/Vrui-4.6/make
-ifdef DEBUG
-  VRUI_MAKEDIR := $(VRUI_MAKEDIR)/debug
-endif
+VRUI_MAKEDIR := $(HOME)/Vrui-2.4/share/make
 
 # Base installation directory for the Augmented Reality Sandbox. If this
 # is set to the default of $(PWD), the Augmented Reality Sandbox does
@@ -36,7 +33,7 @@ endif
 # directory, respectively.
 # Important note: Do not use ~ as an abbreviation for the user's home
 # directory here; use $(HOME) instead.
-INSTALLDIR := $(PWD)
+INSTALLDIR := $(shell pwd)
 
 ########################################################################
 # Everything below here should not have to be changed
@@ -47,7 +44,7 @@ INSTALLDIR := $(PWD)
 # clobbering each other. The value should be identical to the
 # major.minor version number found in VERSION in the root package
 # directory.
-VERSION = 2.6
+VERSION = 1.0
 
 # Set up resource directories: */
 CONFIGDIR = etc/SARndbox-$(VERSION)
@@ -68,10 +65,6 @@ ETCINSTALLDIR = $(INSTALLDIR)/$(CONFIGDIR)
 SHAREINSTALLDIR = $(INSTALLDIR)/$(RESOURCEDIR)
 
 ########################################################################
-# Specify additional compiler and linker flags
-########################################################################
-
-########################################################################
 # List common packages used by all components of this project
 # (Supported packages can be found in $(VRUI_MAKEDIR)/Packages.*)
 ########################################################################
@@ -87,35 +80,6 @@ ALL = $(EXEDIR)/CalibrateProjector \
 
 PHONY: all
 all: $(ALL)
-
-########################################################################
-# Pseudo-target to print configuration options
-########################################################################
-
-.PHONY: config
-config: Configure-End
-
-.PHONY: Configure-Begin
-Configure-Begin:
-	@cp Config.h Config.h.temp
-	@$(call CONFIG_SETSTRINGVAR,Config.h.temp,CONFIG_CONFIGDIR,$(ETCINSTALLDIR))
-	@$(call CONFIG_SETSTRINGVAR,Config.h.temp,CONFIG_SHADERDIR,$(SHAREINSTALLDIR)/Shaders)
-	@if ! diff Config.h.temp Config.h > /dev/null ; then cp Config.h.temp Config.h ; fi
-	@rm Config.h.temp
-
-.PHONY: Configure-Install
-Configure-Install: Configure-Begin
-	@echo "---- SARndbox installation configuration ----"
-	@echo "Root installation directory: $(INSTALLDIR)"
-	@echo "Configuration data directory: $(ETCINSTALLDIR)"
-	@echo "Resource data directory: $(SHAREINSTALLDIR)"
-	@echo "Shader source code directory: $(SHAREINSTALLDIR)/Shaders"
-
-.PHONY: Configure-End
-Configure-End: Configure-Install
-	@echo "---- End of SARndbox configuration options: ----"
-
-$(wildcard *.cpp): config
 
 ########################################################################
 # Specify other actions to be performed on a `make clean'
@@ -134,6 +98,9 @@ include $(VRUI_MAKEDIR)/BasicMakefile
 # Specify build rules for executables
 ########################################################################
 
+# Set location of configuration file directory:
+CFLAGS += -DCONFIGDIR='"$(ETCINSTALLDIR)"'
+
 #
 # Calibration utility for Kinect 3D camera and projector:
 #
@@ -147,19 +114,17 @@ CalibrateProjector: $(EXEDIR)/CalibrateProjector
 #
 
 SARNDBOX_SOURCES = FrameFilter.cpp \
-                   ShaderHelper.cpp \
-                   DepthImageRenderer.cpp \
-                   ElevationColorMap.cpp \
                    SurfaceRenderer.cpp \
                    WaterTable2.cpp \
-                   WaterRenderer.cpp \
-                   HandExtractor.cpp \
-                   GlobalWaterTool.cpp \
-                   LocalWaterTool.cpp \
-                   DEM.cpp \
-                   DEMTool.cpp \
-                   BathymetrySaverTool.cpp \
+                   RainMaker.cpp \
                    Sandbox.cpp
+
+# Set location of shader directory:
+$(OBJDIR)/SurfaceRenderer.o: CFLAGS += -DSHADERDIR='"$(SHAREINSTALLDIR)/Shaders"'
+$(OBJDIR)/WaterTable2.o: CFLAGS += -DSHADERDIR='"$(SHAREINSTALLDIR)/Shaders"'
+
+# Set name of default color map:
+$(OBJDIR)/Sandbox.o: CFLAGS += -DDEFAULTHEIGHTCOLORMAPNAME='"HeightColorMap.cpt"'
 
 $(EXEDIR)/SARndbox: $(SARNDBOX_SOURCES:%.cpp=$(OBJDIR)/%.o)
 .PHONY: SARndbox

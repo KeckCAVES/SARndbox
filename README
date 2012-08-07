@@ -1,6 +1,6 @@
 ========================================================================
-README for Augmented Reality Sandbox (SARndbox) version 2.6
-Copyright (c) 2012-2018 Oliver Kreylos
+README for Augmented Reality Sandbox (SARndbox) version 1.0
+Copyright (c) 2012 Oliver Kreylos
 ========================================================================
 
 Overview
@@ -15,8 +15,9 @@ surface using a calibrated projector.
 Requirements
 ============
 
-The Augmented Reality Sandbox requires Vrui version 4.6 build 005 or
-newer, and the Kinect 3D Video Capture Project version 3.7 or newer.
+The Augmented Reality Sandbox version 1.0 requires Vrui version 2.4
+build 001 or newer, and the Kinect 3D Video Capture Project version 2.1
+or newer.
 
 Installation Guide
 ==================
@@ -25,6 +26,12 @@ It is recommended to download or move the source packages for Vrui, the
 Kinect 3D Video Capture Project, and the Augmented Reality Sandbox into
 a src directory underneath the user's home directory. Otherwise,
 references to ~/src in the following instructions need to be changed.
+
+It is also recommended to skip optional steps 4 and 6 in the following
+instructions. The Augmented Reality Sandbox does not need to be
+installed in order to be used; installation (to a system directory such
+as /usr/local) is only recommended if the Augmented Reality Sandbox will
+be used from multiple user accounts.
 
 0. Install Vrui from ~/src/Vrui-<version>-<build> (see Vrui README file).
 
@@ -42,8 +49,8 @@ references to ~/src in the following instructions need to be changed.
 2. Change into the Augmented Reality Sandbox's base directory:
    > cd SARndbox-<version>
 
-3. If the Vrui version installed in step 0 was not 4.6, or Vrui's
-   installation directory was changed from the default of /usr/local,
+3. If the Vrui version installed in step 0 was not 2.4, or Vrui's
+   installation directory was changed from the default of ~/Vrui-2.4,
    adapt the makefile using a text editor. Change the value of
    VRUI_MAKEDIR close to the beginning of the file as follows:
    VRUI_MAKEDIR := <Vrui install dir>/share/make
@@ -51,17 +58,41 @@ references to ~/src in the following instructions need to be changed.
    step 0. Use $(HOME) to refer to the user's home directory instead
    of ~.
 
-4. Build the Augmented Reality Sandbox:
+4. Optional: Adapt makefile if the Augmented Reality Sandbox is to be
+   installed in a different location, for example /usr/local. Set
+   INSTALLDIR to the desired target location. The Augmented Reality
+   Sandbox will then be installed in <INSTALLDIR>/bin, and its
+   configuration files will be installed in <INSTALLDIR>/etc (where
+   <INSTALLDIR> is the value of INSTALLDIR set in the makefile).
+
+5. Build the Augmented Reality Sandbox:
    > make
 
-5. Install the Augmented Reality Sandbox in the selected target
-   location. To install:
+6. Optional: Install the Augmented Reality Sandbox in the selected
+   target location. This is only necessary if the INSTALLDIR variable in
+   the makefile was changed. By default, the Augmented Reality Sandbox
+   can be run from its base directory. To install:
+   > make install
+   - or, if the target location is a system directory -
    > sudo make install
-   This will copy all executables into <INSTALLDIR>/bin, all
-   configuration files into <INSTALLDIR>/etc/SARndbox-<version>, all
-   resource files into <INSTALLDIR>/share/SARndbox-<version>, and all
-   shader source codes into
-   <INSTALLDIR>/share/SARndbox-<version>/Shaders.
+   This will copy all executables into <INSTALLDIR>/bin, and all
+   configuration files into <INSTALLDIR>/etc.
+
+7. Optional: Add directory containing the Augmented Reality Sandbox
+   executable (~/src/SARndbox-<version>/bin in the default installation,
+   <INSTALLDIR>/bin otherwise) to the user's search path. This allows
+   running the Augmented Reality Sandbox from any directory. Using csh
+   or tcsh:
+   > setenv PATH ${PATH}:~/src/SARndbox-<version>/bin
+   - or -
+   > setenv PATH ${PATH}:<INSTALLDIR>/bin
+   where <INSTALLDIR> is the target location set in the makefile.
+   Using bash:
+   > export PATH=${PATH}:~/src/SARndbox-<version>/bin
+   - or -
+   > export PATH=${PATH}:<INSTALLDIR>/bin
+   These lines can also be added to the user's .cshrc or .bashrc files
+   to make the additions persist between logins.
 
 Use
 ===
@@ -86,10 +117,7 @@ be performed in order:
 1. (Optional) Calculate per-pixel depth correction coefficients for the
    Kinect camera.
 
-2. (Optional) Internally calibrate the Kinect camera. We strongly
-   recommend skipping this step on initial installation, and only
-   performing it if there are intolerable offsets between the real sand
-   surface in the AR Sandbox and the projected topographic image.
+2. (Optional) Internally calibrate the Kinect camera.
 
 3. Mount the Kinect camera above the sandbox so that it is looking
    straight down, and can see the entire sand surface. Use
@@ -228,9 +256,6 @@ After all tie points have been collected:
    intrinsic parameter file in the Kinect 3D video capture project's
    configuration directory.
 
-This calibration step is illustrated in the following tutorial video:
-http://www.youtube.com/watch?v=Qo05LVxdlfo
-
 Step 3: Mount the Kinect camera above the sandbox
 -------------------------------------------------
 
@@ -288,30 +313,32 @@ shifted downwards by decreasing the offset value. The offset value is
 measured in cm; therefore, adding 10 to the original offset value will
 move sea level 10 cm upwards.
 
-This calibration step is illustrated in the following tutorial video:
-http://www.youtube.com/watch?v=9Lt4J_BErs0
-
 Step 5: Measure the extents of the sand surface
 -----------------------------------------------
 
 The Augmented Reality Sandbox needs to know the lateral extents of the
 visible sand surface with respect to the base plane. These are defined
 by measuring the 3D positions of the four corners of the flattened
-average sand surface using RawKinectViewer and a 3D measurement tool,
-and then entering those positions into the sandbox layout file.
+average sand surface using KinectViewer and a 3D measurement tool, and
+then entering those positions into the sandbox layout file.
 
-Start RawKinectViewer, and create a 3D measurement tool by assigning a
-"Measure 3D Positions" tool to some button. Then measure the 3D
-positions of the four corners of the flattened sand surface in the order
-lower left, lower right, upper left, upper right; in other words, form a
-mirrored Z starting in the lower left.
+Start KinectViewer, and create a 3D measurement tool by assigning a
+"Mouse -> Screen Projector" tool to some button, and then a "Measurement
+Tool" tool to the same button. Then measure the 3D positions of the four
+corners of the flattened sand surface in the order lower left, lower
+right, upper right, upper left. To measure the positions correctly,
+change the view until the sand surface is aligned to the screen plane,
+i.e., until the crosshairs displayed while the viewpoint is changed
+exactly touch the virtual sand surface along its entire extent. Then
+move the mouse to the four corners of the virtual sand surface, and
+click the "Measurement Tool" tool's button once each time.
 
-To measure a 3D position, press and release the button to which the
-measurement tool was bound inside the depth frame. This will query the
-current depth value at the selected position, project it into 3D camera
-space, and print the resulting 3D position to the console. Simply paste
-the four corner positions, in the order mentioned above, into the
-sandbox layout file.
+The measurement tool will save its measurements in a file in the current
+directory, with a name of MeasurementToolXXXX.dat. This file will
+contain one line per collected measurement point, prefixed by
+"Navigational position" followed by the point's x, y, and z coordinates.
+Paste the coordinates of each point into the sandbox layout file in the
+order mentioned above. Afterwards, the measurement file can be deleted.
 
 Step 6: Mount the projector above the sandbox
 ---------------------------------------------
@@ -403,35 +430,16 @@ are in the same plane, the calibration procedure will fail.
 The exact procedure is as follows:
 
 1. Start CalibrateProjector and wait for it to collect a background
-   frame. Background capture is active while the screen is red. It is
-   essential to run CalibrateProjector in full-screen mode on the
-   projector, or the resulting calibration will be defective. See the
-   Vrui user's manual on how to force Vrui applications to run at the
-   proper position and size. Alternatively, switch CalibrateProjector
-   into full-screen mode manually by pressing the F11 function key.
-   
+   frame. It is essential to run CalibrateProjector in full-screen mode
+   on the projector, or the resulting calibration will be defective. See
+   the Vrui user's manual on how to force Vrui applications to run at
+   the proper position and size.
    When started, CalibrateProjector must be told the exact pixel size of
    the projector's image using the -s <width> <height> command line
    option. Using a wrong pixel size will result in a defective
-   calibration. The recommended BenQ short-throw projector has 1024x768
-   pixels, which is also the default in the software. In other words,
-   when using an XGA-resolution projector, the -s option is not
-   required.
+   calibration.
 
-2. Create a "Capture" tool and bind it to two keys (here "1" and "2").
-   Press and hold "1" and move the mouse to highlight the "Capture" item
-   in the tool selection menu that pops up. Then release "1" to select
-   the highlighted item. This will open a dialog box prompting to press
-   a second key; press and release "2". This will close the dialog box.
-   Do not press "1" again when the dialog box is still open; that will
-   cancel the tool creation process.
-   This process binds functions to two keys: "1" will capture a tie
-   point, and "2" will re-capture the background sand surface. "2"
-   should only be pressed if the sand surface changes during the
-   calibration procedure, for example if a hole is dug to capture a
-   lower tie point. After any change to the sand surface, remove the
-   calibration object and any other objects, press "2", and wait for the
-   screen to turn black again.
+2. Create a "Capture" tool.
 
 3. Place the disk target at some random elevation above or below the
    flattened average sand surface such that the intersection of the
@@ -439,18 +447,15 @@ The exact procedure is as follows:
    point.
 
 4. Remove your hands from the disk target and confirm that the target
-   is seen by the Kinect camera. CalibrateProjector will display all
-   non-background objects as yellow blobs, and the object it identified
-   as the calibration target as a green blob. Because there is no
-   calibration yet, the green blob corresponding to the disk target will
-   not be aligned with the target; simply ensure that there is a green
-   blob, that it is circular and stable, and that it matches the actual
-   calibration target (put your hand next to it, and see if the yellow
-   blob matching your hand appears next to the green blob).
+   is seen by the Kinect camera. CalibrateProjector will display green
+   boxes of various sizes surrounding non-background blobs in the depth
+   image. Because there is no calibration yet, the green box
+   corresponding to the disk target will not appear over the target;
+   simply ensure that there is a big green box for the disk target, and
+   that the box is stable.
 
-5. Press the "Capture" tool's first button ("1"), and wait until the tie
-   point is captured. Do not move the calibration target or hold any
-   objects above the sand surface while a tie point is captured.
+5. Press the "Capture" tool's button, and wait until the tie point is
+   captured.
 
 6. CalibrateProjector will move on to the next tie point position, and
    display a new set of white lines. Repeat from step 3 until all tie
@@ -461,38 +466,16 @@ The exact procedure is as follows:
    continue to capture more tie points to improve calibration as
    desired; the calibration file will be updated after every additional
    tie point. Simply close the application window when satisfied.
-	 Additionally, after the first round of tie points has been collected,
-   CalibrateProjector will track the calibration target in real-time and
-   indicate its position with red crosshairs. To check calibration
-   quality, place the target anywhere in or above the sandbox, remove
-   your hands, and ensure that the red crosshairs intersect in the
-   target's center.
-
-This calibration step is illustrated in the following tutorial video:
-http://www.youtube.com/watch?v=V_-Qn7oEsn4
-This older video:
-http://www.youtube.com/watch?v=vXkA9gUoSAc
-shows the previous calibration procedure, and does no longer apply.
 
 Step 8: Run the Augmented Reality Sandbox
 -----------------------------------------
 
 At this point, calibration is complete. It is now possible to run the
-main Augmented Reality Sandbox application from inside the source code
-directory (or the -- optionally chosen -- installation directory):
-
-> ./bin/SARndbox -uhm -fpv
-
-The -fpv ("fix projector view") option tells the AR Sandbox to use the
-projector calibration matrix created in step 7. The -uhm ("Use Height
-Map") option tells the AR Sandbox to color-map the 3D surface by
-elevation, using the default height color map.
-
-It is very important to run the application in full-screen mode on the
-projector, or at least with the exact same window position and size as
-CalibrateProjector in step 7. If this is not done correctly, the
-calibration will not work as desired. To manually switch SARndbox into
-full-screen mode after start-up, press the F11 function key.
+main Augmented Reality Sandbox application, SARndbox, without any
+required command line options. It is, however, important to run the
+application in full-screen mode on the projector, or at least with the
+exact same window position and size as CalibrateProjector in step 7. If
+this is not done correctly, the calibration will not work as desired.
 
 To check the calibration, observe how the projected colors and
 topographic contour lines exactly match the physical features of the
@@ -521,5 +504,5 @@ simulation, using the -ws 0.0 0 command line option to SARndbox, or
 reducing its resolution using the -wts <width> <height> command line
 option with small sizes, e.g., -wts 200 150, for initial testing or
 unless the PC running the Augmented Reality Sandbox has a top-of-the
-line CPU, a high-end gaming graphics card, e.g., an Nvidia GeForce 970,
+line CPU, a high-end gaming graphics card, e.g., and Nvidia GeForce 680,
 and the vendor-supplied proprietary drivers for that graphics card.

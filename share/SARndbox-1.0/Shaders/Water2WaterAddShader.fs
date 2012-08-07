@@ -1,6 +1,6 @@
 /***********************************************************************
-Config - Configuration header file for the Augmented Reality Sandbox.
-Copyright (c) 2014-2017 Oliver Kreylos
+Water2WaterAddShader - Shader to render water-adding objects.
+Copyright (c) 2012 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -19,15 +19,14 @@ with the Augmented Reality Sandbox; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 ***********************************************************************/
 
-#ifndef CONFIG_INCLUDED
-#define CONFIG_INCLUDED
+#extension GL_ARB_texture_rectangle : enable
 
-#define CONFIG_CONFIGDIR "/usr/local/etc/SARndbox-2.4"
-#define CONFIG_SHADERDIR "/usr/local/share/SARndbox-2.4/Shaders"
+uniform sampler2DRect waterSampler;
 
-#define CONFIG_DEFAULTCONFIGFILENAME "SARndbox.cfg"
-#define CONFIG_DEFAULTBOXLAYOUTFILENAME "BoxLayout.txt"
-#define CONFIG_DEFAULTPROJECTIONMATRIXFILENAME "ProjectorMatrix.dat"
-#define CONFIG_DEFAULTHEIGHTCOLORMAPFILENAME "HeightColorMap.cpt"
+varying float scaledWaterAmount;
 
-#endif
+void main()
+	{
+	/* Update the water texture: */
+	gl_FragColor=vec4(scaledWaterAmount);
+	}

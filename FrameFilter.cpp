@@ -2,7 +2,7 @@
 FrameFilter - Class to filter streams of depth frames arriving from a
 depth camera, with code to detect unstable values in each pixel, and
 fill holes resulting from invalid samples.
-Copyright (c) 2012-2016 Oliver Kreylos
+Copyright (c) 2012 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -25,7 +25,10 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 #include <Misc/FunctionCalls.h>
 #include <Geometry/HVector.h>
+#include <Geometry/Plane.h>
 #include <Geometry/Matrix.h>
+#include <Geometry/ProjectiveTransformation.h>
+#include <Kinect/FrameSource.h>
 
 /****************************
 Methods of class FrameFilter:
@@ -54,96 +57,155 @@ void* FrameFilter::filterThreadMethod(void)
 		lastInputFrameVersion=inputFrameVersion;
 		}
 		
-		/* Prepare a new output frame: */
-		Kinect::FrameBuffer& newOutputFrame=outputFrames.startNewValue();
+		/* Create a new output frame: */
+		Kinect::FrameBuffer newOutputFrame(size[0],size[1],size[1]*size[0]*sizeof(float));
 		
 		/* Enter the new frame into the averaging buffer and calculate the output frame's pixel values: */
-		const RawDepth* ifPtr=inputFrame.getData<RawDepth>();
+		const RawDepth* ifPtr=static_cast<const RawDepth*>(inputFrame.getBuffer());
 		RawDepth* abPtr=averagingBuffer+averagingSlotIndex*size[1]*size[0];
 		unsigned int* sPtr=statBuffer;
-		float* ofPtr=validBuffer;
-		float* nofPtr=newOutputFrame.getData<float>();
-		const PixelDepthCorrection* pdcPtr=pixelDepthCorrection;
-		for(unsigned int y=0;y<size[1];++y)
+		float* ofPtr=validBuffer; // static_cast<const float*>(outputFrame.getBuffer());
+		float* nofPtr=static_cast<float*>(newOutputFrame.getBuffer());
+		if(hasDepthCorrection)
 			{
-			float py=float(y)+0.5f;
-			for(unsigned int x=0;x<size[0];++x,++ifPtr,++pdcPtr,++abPtr,sPtr+=3,++ofPtr,++nofPtr)
+			const Kinect::FrameSource::PixelDepthCorrection* pdcPtr=static_cast<const Kinect::FrameSource::PixelDepthCorrection*>(depthCorrection.getBuffer());
+			for(int y=0;y<size[1];++y)
 				{
-				float px=float(x)+0.5f;
-				
-				unsigned int oldVal=*abPtr;
-				unsigned int newVal=*ifPtr;
-				
-				/* Depth-correct the new value: */
-				float newCVal=pdcPtr->correct(newVal);
-				
-				/* Plug the depth-corrected new value into the minimum and maximum plane equations to determine its validity: */
-				float minD=minPlane[0]*px+minPlane[1]*py+minPlane[2]*newCVal+minPlane[3];
-				float maxD=maxPlane[0]*px+maxPlane[1]*py+maxPlane[2]*newCVal+maxPlane[3];
-				if(minD>=0.0f&&maxD<=0.0f)
+				float py=float(y)+0.5f;
+				for(int x=0;x<size[0];++x,++ifPtr,++pdcPtr,++abPtr,sPtr+=3,++ofPtr,++nofPtr)
 					{
-					/* Store the new input value: */
-					*abPtr=newVal;
+					float px=float(x)+0.5f;
 					
-					/* Update the pixel's statistics: */
-					++sPtr[0]; // Number of valid samples
-					sPtr[1]+=newVal; // Sum of valid samples
-					sPtr[2]+=newVal*newVal; // Sum of squares of valid samples
+					unsigned int oldVal=*abPtr;
+					unsigned int newVal=*ifPtr;
 					
-					/* Check if the previous value in the averaging buffer was valid: */
-					if(oldVal!=2048U)
+					/* Depth-correct the new value: */
+					float newCVal=float(newVal)*pdcPtr->scale+pdcPtr->offset;
+					
+					/* Plug the depth-corrected new value into the minimum and maximum plane equations to determine its validity: */
+					float minD=minPlane[0]*px+minPlane[1]*py+minPlane[2]*newCVal+minPlane[3];
+					float maxD=maxPlane[0]*px+maxPlane[1]*py+maxPlane[2]*newCVal+maxPlane[3];
+					if(minD>=0.0f&&maxD<=0.0f)
 						{
-						--sPtr[0]; // Number of valid samples
-						sPtr[1]-=oldVal; // Sum of valid samples
-						sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
+						/* Store the new input value: */
+						*abPtr=newVal;
+						
+						/* Update the pixel's statistics: */
+						++sPtr[0]; // Number of valid samples
+						sPtr[1]+=newVal; // Sum of valid samples
+						sPtr[2]+=newVal*newVal; // Sum of squares of valid samples
+						
+						/* Check if the previous value in the averaging buffer was valid: */
+						if(oldVal!=2048U)
+							{
+							--sPtr[0]; // Number of valid samples
+							sPtr[1]-=oldVal; // Sum of valid samples
+							sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
+							}
 						}
-					}
-				else if(!retainValids)
-					{
-					/* Store an invalid input value: */
-					*abPtr=2048U;
-					
-					/* Check if the previous value in the averaging buffer was valid: */
-					if(oldVal!=2048U)
+					else if(!retainValids)
 						{
-						--sPtr[0]; // Number of valid samples
-						sPtr[1]-=oldVal; // Sum of valid samples
-						sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
+						/* Store an invalid input value: */
+						*abPtr=2048U;
+						
+						/* Check if the previous value in the averaging buffer was valid: */
+						if(oldVal!=2048U)
+							{
+							--sPtr[0]; // Number of valid samples
+							sPtr[1]-=oldVal; // Sum of valid samples
+							sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
+							}
 						}
-					}
-				
-				/* Check if the pixel is considered "stable": */
-				if(sPtr[0]>=minNumSamples&&sPtr[2]*sPtr[0]<=maxVariance*sPtr[0]*sPtr[0]+sPtr[1]*sPtr[1])
-					{
-					/* Check if the new depth-corrected running mean is outside the previous value's envelope: */
-					float newFiltered=pdcPtr->correct(float(sPtr[1])/float(sPtr[0]));
-					if(Math::abs(newFiltered-*ofPtr)>=hysteresis)
+					
+					/* Check if the pixel is considered "stable": */
+					if(sPtr[0]>=minNumSamples&&sPtr[2]*sPtr[0]<=maxVariance*sPtr[0]*sPtr[0]+sPtr[1]*sPtr[1])
 						{
 						/* Set the output pixel value to the depth-corrected running mean: */
-						*nofPtr=*ofPtr=newFiltered;
+						*nofPtr=*ofPtr=(float(sPtr[1])/float(sPtr[0]))*pdcPtr->scale+pdcPtr->offset;
 						}
-					else
+					else if(retainValids)
 						{
 						/* Leave the pixel at its previous value: */
 						*nofPtr=*ofPtr;
 						}
+					else
+						{
+						/* Assign default value to instable pixels: */
+						*nofPtr=instableValue;
+						}
 					}
-				else if(retainValids)
+				}
+			}
+		else
+			{
+			for(int y=0;y<size[1];++y)
+				{
+				float py=float(y)+0.5f;
+				for(int x=0;x<size[0];++x,++ifPtr,++abPtr,sPtr+=3,++ofPtr,++nofPtr)
 					{
-					/* Leave the pixel at its previous value: */
-					*nofPtr=*ofPtr;
-					}
-				else
-					{
-					/* Assign default value to instable pixels: */
-					*nofPtr=instableValue;
+					float px=float(x)+0.5f;
+					
+					unsigned int oldVal=*abPtr;
+					unsigned int newVal=*ifPtr;
+					
+					/* Plug the new value into the minimum and maximum plane equations to determine its validity: */
+					float minD=minPlane[0]*px+minPlane[1]*py+minPlane[2]*float(newVal)+minPlane[3];
+					float maxD=maxPlane[0]*px+maxPlane[1]*py+maxPlane[2]*float(newVal)+maxPlane[3];
+					if(minD>=0.0f&&maxD<=0.0f)
+						{
+						/* Store the new input value: */
+						*abPtr=newVal;
+						
+						/* Update the pixel's statistics: */
+						++sPtr[0]; // Number of valid samples
+						sPtr[1]+=newVal; // Sum of valid samples
+						sPtr[2]+=newVal*newVal; // Sum of squares of valid samples
+						
+						/* Check if the previous value in the averaging buffer was valid: */
+						if(oldVal!=2048U)
+							{
+							--sPtr[0]; // Number of valid samples
+							sPtr[1]-=oldVal; // Sum of valid samples
+							sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
+							}
+						}
+					else if(!retainValids)
+						{
+						/* Store an invalid input value: */
+						*abPtr=2048U;
+						
+						/* Check if the previous value in the averaging buffer was valid: */
+						if(oldVal!=2048U)
+							{
+							--sPtr[0]; // Number of valid samples
+							sPtr[1]-=oldVal; // Sum of valid samples
+							sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
+							}
+						}
+					
+					/* Check if the pixel is considered "stable": */
+					if(sPtr[0]>=minNumSamples&&sPtr[2]*sPtr[0]<=maxVariance*sPtr[0]*sPtr[0]+sPtr[1]*sPtr[1])
+						{
+						/* Set the output pixel value to the running mean: */
+						*nofPtr=*ofPtr=(float(sPtr[1])/float(sPtr[0]));
+						}
+					else if(retainValids)
+						{
+						/* Leave the pixel at its previous value: */
+						*nofPtr=*ofPtr;
+						}
+					else
+						{
+						/* Assign default value to instable pixels: */
+						*nofPtr=instableValue;
+						}
 					}
 				}
 			}
 		
 		/* Go to the next averaging slot: */
 		if(++averagingSlotIndex==numAveragingSlots)
-			averagingSlotIndex=0U;
+			averagingSlotIndex=0;
 		
 		/* Apply a spatial filter if requested: */
 		if(spatialFilter)
@@ -151,10 +213,10 @@ void* FrameFilter::filterThreadMethod(void)
 			for(int filterPass=0;filterPass<2;++filterPass)
 				{
 				/* Low-pass filter the entire output frame in-place: */
-				for(unsigned int x=0;x<size[0];++x)
+				for(int x=0;x<size[0];++x)
 					{
 					/* Get a pointer to the current column: */
-					float* colPtr=newOutputFrame.getData<float>()+x;
+					float* colPtr=static_cast<float*>(newOutputFrame.getBuffer())+x;
 					
 					/* Filter the first pixel in the column: */
 					float lastVal=*colPtr;
@@ -162,7 +224,7 @@ void* FrameFilter::filterThreadMethod(void)
 					colPtr+=size[0];
 					
 					/* Filter the interior pixels in the column: */
-					for(unsigned int y=1;y<size[1]-1;++y,colPtr+=size[0])
+					for(int y=1;y<size[1]-1;++y,colPtr+=size[0])
 						{
 						/* Filter the pixel: */
 						float nextLastVal=*colPtr;
@@ -173,8 +235,8 @@ void* FrameFilter::filterThreadMethod(void)
 					/* Filter the last pixel in the column: */
 					*colPtr=(lastVal+colPtr[0]*2.0f)/3.0f;
 					}
-				float* rowPtr=newOutputFrame.getData<float>();
-				for(unsigned int y=0;y<size[1];++y)
+				float* rowPtr=static_cast<float*>(newOutputFrame.getBuffer());
+				for(int y=0;y<size[1];++y)
 					{
 					/* Filter the first pixel in the row: */
 					float lastVal=*rowPtr;
@@ -182,7 +244,7 @@ void* FrameFilter::filterThreadMethod(void)
 					++rowPtr;
 					
 					/* Filter the interior pixels in the row: */
-					for(unsigned int x=1;x<size[0]-1;++x,++rowPtr)
+					for(int x=1;x<size[0]-1;++x,++rowPtr)
 						{
 						/* Filter the pixel: */
 						float nextLastVal=*rowPtr;
@@ -197,19 +259,19 @@ void* FrameFilter::filterThreadMethod(void)
 				}
 			}
 		
-		/* Finalize the new output frame in the output buffer: */
-		outputFrames.postNewValue();
-		
 		/* Pass the new output frame to the registered receiver: */
 		if(outputFrameFunction!=0)
 			(*outputFrameFunction)(newOutputFrame);
+		
+		/* Retain the new output frame: */
+		outputFrame=newOutputFrame;
 		}
 	
 	return 0;
 	}
 
-FrameFilter::FrameFilter(const unsigned int sSize[2],unsigned int sNumAveragingSlots,const FrameFilter::PixelDepthCorrection* sPixelDepthCorrection,const PTransform& depthProjection,const Plane& basePlane)
-	:pixelDepthCorrection(sPixelDepthCorrection),
+FrameFilter::FrameFilter(const int sSize[2],int sNumAveragingSlots,const FrameFilter::PTransform& depthProjection,const FrameFilter::Plane& basePlane)
+	:hasDepthCorrection(false),
 	 averagingBuffer(0),
 	 statBuffer(0),
 	 outputFrameFunction(0)
@@ -228,24 +290,23 @@ FrameFilter::FrameFilter(const unsigned int sSize[2],unsigned int sNumAveragingS
 	numAveragingSlots=sNumAveragingSlots;
 	averagingBuffer=new RawDepth[numAveragingSlots*size[1]*size[0]];
 	RawDepth* abPtr=averagingBuffer;
-	for(unsigned int i=0;i<numAveragingSlots;++i)
-		for(unsigned int y=0;y<size[1];++y)
-			for(unsigned int x=0;x<size[0];++x,++abPtr)
+	for(int i=0;i<numAveragingSlots;++i)
+		for(int y=0;y<size[1];++y)
+			for(int x=0;x<size[0];++x,++abPtr)
 				*abPtr=2048U; // Mark sample as invalid
-	averagingSlotIndex=0U;
+	averagingSlotIndex=0;
 	
 	/* Initialize the statistics buffer: */
 	statBuffer=new unsigned int[size[1]*size[0]*3];
 	unsigned int* sbPtr=statBuffer;
-	for(unsigned int y=0;y<size[1];++y)
-		for(unsigned int x=0;x<size[0];++x)
+	for(int y=0;y<size[1];++y)
+		for(int x=0;x<size[0];++x)
 			for(int i=0;i<3;++i,++sbPtr)
 				*sbPtr=0;
 	
 	/* Initialize the stability criterion: */
 	minNumSamples=(numAveragingSlots+1)/2;
 	maxVariance=4;
-	hysteresis=0.1f;
 	retainValids=true;
 	instableValue=0.0;
 	
@@ -261,13 +322,9 @@ FrameFilter::FrameFilter(const unsigned int sSize[2],unsigned int sNumAveragingS
 	/* Initialize the valid buffer: */
 	validBuffer=new float[size[1]*size[0]];
 	float* vbPtr=validBuffer;
-	for(unsigned int y=0;y<size[1];++y)
-		for(unsigned int x=0;x<size[0];++x,++vbPtr)
+	for(int y=0;y<size[1];++y)
+		for(int x=0;x<size[0];++x,++vbPtr)
 			*vbPtr=float(-((double(x)+0.5)*basePlaneDic[0]+(double(y)+0.5)*basePlaneDic[1]+basePlaneDic[3])/basePlaneDic[2]);
-	
-	/* Initialize the output frame buffer: */
-	for(int i=0;i<3;++i)
-		outputFrames.getBuffer(i)=Kinect::FrameBuffer(size[0],size[1],size[1]*size[0]*sizeof(float));
 	
 	/* Start the filtering thread: */
 	runFilterThread=true;
@@ -291,6 +348,13 @@ FrameFilter::~FrameFilter(void)
 	delete outputFrameFunction;
 	}
 
+void FrameFilter::setDepthCorrection(const Kinect::FrameBuffer& newDepthCorrection)
+	{
+	/* Enable per-pixel depth correction: */
+	hasDepthCorrection=true;
+	depthCorrection=newDepthCorrection;
+	}
+
 void FrameFilter::setValidDepthInterval(unsigned int newMinDepth,unsigned int newMaxDepth)
 	{
 	/* Set the equations for the minimum and maximum plane in depth image space: */
@@ -304,7 +368,7 @@ void FrameFilter::setValidDepthInterval(unsigned int newMinDepth,unsigned int ne
 	maxPlane[3]=-float(newMaxDepth)-0.5f;
 	}
 
-void FrameFilter::setValidElevationInterval(const PTransform& depthProjection,const Plane& basePlane,double newMinElevation,double newMaxElevation)
+void FrameFilter::setValidElevationInterval(const FrameFilter::PTransform& depthProjection,const FrameFilter::Plane& basePlane,double newMinElevation,double newMaxElevation)
 	{
 	/* Calculate the equations of the minimum and maximum elevation planes in camera space: */
 	PTransform::HVector minPlaneCc(basePlane.getNormal());
@@ -327,11 +391,6 @@ void FrameFilter::setStableParameters(unsigned int newMinNumSamples,unsigned int
 	{
 	minNumSamples=newMinNumSamples;
 	maxVariance=newMaxVariance;
-	}
-
-void FrameFilter::setHysteresis(float newHysteresis)
-	{
-	hysteresis=newHysteresis;
 	}
 
 void FrameFilter::setRetainValids(bool newRetainValids)

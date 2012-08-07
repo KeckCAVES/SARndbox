@@ -1,7 +1,7 @@
 /***********************************************************************
 SurfaceElevationShader - Shader to render the elevation of a surface
 relative to a plane.
-Copyright (c) 2012-2014 Oliver Kreylos
+Copyright (c) 2012 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
