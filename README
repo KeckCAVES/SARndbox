@@ -1,5 +1,5 @@
 ========================================================================
-README for Augmented Reality Sandbox (SARndbox) version 1.0
+README for Augmented Reality Sandbox (SARndbox) version 1.1
 Copyright (c) 2012 Oliver Kreylos
 ========================================================================
 
@@ -15,7 +15,7 @@ surface using a calibrated projector.
 Requirements
 ============
 
-The Augmented Reality Sandbox version 1.0 requires Vrui version 2.4
+The Augmented Reality Sandbox version 1.1 requires Vrui version 2.4
 build 001 or newer, and the Kinect 3D Video Capture Project version 2.1
 or newer.
 
