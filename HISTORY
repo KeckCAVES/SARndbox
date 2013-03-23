@@ -6,3 +6,7 @@ SARndbox-1.0:
 
 SARndbox-1.1:
 - Added constant water evaporation rate to sandbox.
+
+SARndbox-1.2:
+- Adapted code to APIs of Vrui-2.7 and Kinect-2.5.
+- Changed types of all size variables to unsigned int.

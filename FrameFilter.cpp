@@ -2,7 +2,7 @@
 FrameFilter - Class to filter streams of depth frames arriving from a
 depth camera, with code to detect unstable values in each pixel, and
 fill holes resulting from invalid samples.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -28,7 +28,6 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <Geometry/Plane.h>
 #include <Geometry/Matrix.h>
 #include <Geometry/ProjectiveTransformation.h>
-#include <Kinect/FrameSource.h>
 
 /****************************
 Methods of class FrameFilter:
@@ -66,139 +65,70 @@ void* FrameFilter::filterThreadMethod(void)
 		unsigned int* sPtr=statBuffer;
 		float* ofPtr=validBuffer; // static_cast<const float*>(outputFrame.getBuffer());
 		float* nofPtr=static_cast<float*>(newOutputFrame.getBuffer());
-		if(hasDepthCorrection)
+		const PixelDepthCorrection* pdcPtr=pixelDepthCorrection;
+		for(unsigned int y=0;y<size[1];++y)
 			{
-			const Kinect::FrameSource::PixelDepthCorrection* pdcPtr=static_cast<const Kinect::FrameSource::PixelDepthCorrection*>(depthCorrection.getBuffer());
-			for(int y=0;y<size[1];++y)
+			float py=float(y)+0.5f;
+			for(unsigned int x=0;x<size[0];++x,++ifPtr,++pdcPtr,++abPtr,sPtr+=3,++ofPtr,++nofPtr)
 				{
-				float py=float(y)+0.5f;
-				for(int x=0;x<size[0];++x,++ifPtr,++pdcPtr,++abPtr,sPtr+=3,++ofPtr,++nofPtr)
+				float px=float(x)+0.5f;
+				
+				unsigned int oldVal=*abPtr;
+				unsigned int newVal=*ifPtr;
+				
+				/* Depth-correct the new value: */
+				float newCVal=pdcPtr->correct(newVal);
+				
+				/* Plug the depth-corrected new value into the minimum and maximum plane equations to determine its validity: */
+				float minD=minPlane[0]*px+minPlane[1]*py+minPlane[2]*newCVal+minPlane[3];
+				float maxD=maxPlane[0]*px+maxPlane[1]*py+maxPlane[2]*newCVal+maxPlane[3];
+				if(minD>=0.0f&&maxD<=0.0f)
 					{
-					float px=float(x)+0.5f;
+					/* Store the new input value: */
+					*abPtr=newVal;
 					
-					unsigned int oldVal=*abPtr;
-					unsigned int newVal=*ifPtr;
+					/* Update the pixel's statistics: */
+					++sPtr[0]; // Number of valid samples
+					sPtr[1]+=newVal; // Sum of valid samples
+					sPtr[2]+=newVal*newVal; // Sum of squares of valid samples
 					
-					/* Depth-correct the new value: */
-					float newCVal=float(newVal)*pdcPtr->scale+pdcPtr->offset;
-					
-					/* Plug the depth-corrected new value into the minimum and maximum plane equations to determine its validity: */
-					float minD=minPlane[0]*px+minPlane[1]*py+minPlane[2]*newCVal+minPlane[3];
-					float maxD=maxPlane[0]*px+maxPlane[1]*py+maxPlane[2]*newCVal+maxPlane[3];
-					if(minD>=0.0f&&maxD<=0.0f)
+					/* Check if the previous value in the averaging buffer was valid: */
+					if(oldVal!=2048U)
 						{
-						/* Store the new input value: */
-						*abPtr=newVal;
-						
-						/* Update the pixel's statistics: */
-						++sPtr[0]; // Number of valid samples
-						sPtr[1]+=newVal; // Sum of valid samples
-						sPtr[2]+=newVal*newVal; // Sum of squares of valid samples
-						
-						/* Check if the previous value in the averaging buffer was valid: */
-						if(oldVal!=2048U)
-							{
-							--sPtr[0]; // Number of valid samples
-							sPtr[1]-=oldVal; // Sum of valid samples
-							sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
-							}
-						}
-					else if(!retainValids)
-						{
-						/* Store an invalid input value: */
-						*abPtr=2048U;
-						
-						/* Check if the previous value in the averaging buffer was valid: */
-						if(oldVal!=2048U)
-							{
-							--sPtr[0]; // Number of valid samples
-							sPtr[1]-=oldVal; // Sum of valid samples
-							sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
-							}
-						}
-					
-					/* Check if the pixel is considered "stable": */
-					if(sPtr[0]>=minNumSamples&&sPtr[2]*sPtr[0]<=maxVariance*sPtr[0]*sPtr[0]+sPtr[1]*sPtr[1])
-						{
-						/* Set the output pixel value to the depth-corrected running mean: */
-						*nofPtr=*ofPtr=(float(sPtr[1])/float(sPtr[0]))*pdcPtr->scale+pdcPtr->offset;
-						}
-					else if(retainValids)
-						{
-						/* Leave the pixel at its previous value: */
-						*nofPtr=*ofPtr;
-						}
-					else
-						{
-						/* Assign default value to instable pixels: */
-						*nofPtr=instableValue;
+						--sPtr[0]; // Number of valid samples
+						sPtr[1]-=oldVal; // Sum of valid samples
+						sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
 						}
 					}
-				}
-			}
-		else
-			{
-			for(int y=0;y<size[1];++y)
-				{
-				float py=float(y)+0.5f;
-				for(int x=0;x<size[0];++x,++ifPtr,++abPtr,sPtr+=3,++ofPtr,++nofPtr)
+				else if(!retainValids)
 					{
-					float px=float(x)+0.5f;
+					/* Store an invalid input value: */
+					*abPtr=2048U;
 					
-					unsigned int oldVal=*abPtr;
-					unsigned int newVal=*ifPtr;
-					
-					/* Plug the new value into the minimum and maximum plane equations to determine its validity: */
-					float minD=minPlane[0]*px+minPlane[1]*py+minPlane[2]*float(newVal)+minPlane[3];
-					float maxD=maxPlane[0]*px+maxPlane[1]*py+maxPlane[2]*float(newVal)+maxPlane[3];
-					if(minD>=0.0f&&maxD<=0.0f)
+					/* Check if the previous value in the averaging buffer was valid: */
+					if(oldVal!=2048U)
 						{
-						/* Store the new input value: */
-						*abPtr=newVal;
-						
-						/* Update the pixel's statistics: */
-						++sPtr[0]; // Number of valid samples
-						sPtr[1]+=newVal; // Sum of valid samples
-						sPtr[2]+=newVal*newVal; // Sum of squares of valid samples
-						
-						/* Check if the previous value in the averaging buffer was valid: */
-						if(oldVal!=2048U)
-							{
-							--sPtr[0]; // Number of valid samples
-							sPtr[1]-=oldVal; // Sum of valid samples
-							sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
-							}
+						--sPtr[0]; // Number of valid samples
+						sPtr[1]-=oldVal; // Sum of valid samples
+						sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
 						}
-					else if(!retainValids)
-						{
-						/* Store an invalid input value: */
-						*abPtr=2048U;
-						
-						/* Check if the previous value in the averaging buffer was valid: */
-						if(oldVal!=2048U)
-							{
-							--sPtr[0]; // Number of valid samples
-							sPtr[1]-=oldVal; // Sum of valid samples
-							sPtr[2]-=oldVal*oldVal; // Sum of squares of valid samples
-							}
-						}
-					
-					/* Check if the pixel is considered "stable": */
-					if(sPtr[0]>=minNumSamples&&sPtr[2]*sPtr[0]<=maxVariance*sPtr[0]*sPtr[0]+sPtr[1]*sPtr[1])
-						{
-						/* Set the output pixel value to the running mean: */
-						*nofPtr=*ofPtr=(float(sPtr[1])/float(sPtr[0]));
-						}
-					else if(retainValids)
-						{
-						/* Leave the pixel at its previous value: */
-						*nofPtr=*ofPtr;
-						}
-					else
-						{
-						/* Assign default value to instable pixels: */
-						*nofPtr=instableValue;
-						}
+					}
+				
+				/* Check if the pixel is considered "stable": */
+				if(sPtr[0]>=minNumSamples&&sPtr[2]*sPtr[0]<=maxVariance*sPtr[0]*sPtr[0]+sPtr[1]*sPtr[1])
+					{
+					/* Set the output pixel value to the depth-corrected running mean: */
+					*nofPtr=*ofPtr=pdcPtr->correct(float(sPtr[1])/float(sPtr[0]));
+					}
+				else if(retainValids)
+					{
+					/* Leave the pixel at its previous value: */
+					*nofPtr=*ofPtr;
+					}
+				else
+					{
+					/* Assign default value to instable pixels: */
+					*nofPtr=instableValue;
 					}
 				}
 			}
@@ -213,7 +143,7 @@ void* FrameFilter::filterThreadMethod(void)
 			for(int filterPass=0;filterPass<2;++filterPass)
 				{
 				/* Low-pass filter the entire output frame in-place: */
-				for(int x=0;x<size[0];++x)
+				for(unsigned int x=0;x<size[0];++x)
 					{
 					/* Get a pointer to the current column: */
 					float* colPtr=static_cast<float*>(newOutputFrame.getBuffer())+x;
@@ -224,7 +154,7 @@ void* FrameFilter::filterThreadMethod(void)
 					colPtr+=size[0];
 					
 					/* Filter the interior pixels in the column: */
-					for(int y=1;y<size[1]-1;++y,colPtr+=size[0])
+					for(unsigned int y=1;y<size[1]-1;++y,colPtr+=size[0])
 						{
 						/* Filter the pixel: */
 						float nextLastVal=*colPtr;
@@ -236,7 +166,7 @@ void* FrameFilter::filterThreadMethod(void)
 					*colPtr=(lastVal+colPtr[0]*2.0f)/3.0f;
 					}
 				float* rowPtr=static_cast<float*>(newOutputFrame.getBuffer());
-				for(int y=0;y<size[1];++y)
+				for(unsigned int y=0;y<size[1];++y)
 					{
 					/* Filter the first pixel in the row: */
 					float lastVal=*rowPtr;
@@ -244,7 +174,7 @@ void* FrameFilter::filterThreadMethod(void)
 					++rowPtr;
 					
 					/* Filter the interior pixels in the row: */
-					for(int x=1;x<size[0]-1;++x,++rowPtr)
+					for(unsigned int x=1;x<size[0]-1;++x,++rowPtr)
 						{
 						/* Filter the pixel: */
 						float nextLastVal=*rowPtr;
@@ -270,8 +200,8 @@ void* FrameFilter::filterThreadMethod(void)
 	return 0;
 	}
 
-FrameFilter::FrameFilter(const int sSize[2],int sNumAveragingSlots,const FrameFilter::PTransform& depthProjection,const FrameFilter::Plane& basePlane)
-	:hasDepthCorrection(false),
+FrameFilter::FrameFilter(const unsigned int sSize[2],int sNumAveragingSlots,const FrameFilter::PTransform& depthProjection,const FrameFilter::Plane& basePlane)
+	:pixelDepthCorrection(0),
 	 averagingBuffer(0),
 	 statBuffer(0),
 	 outputFrameFunction(0)
@@ -279,6 +209,16 @@ FrameFilter::FrameFilter(const int sSize[2],int sNumAveragingSlots,const FrameFi
 	/* Remember the frame size: */
 	for(int i=0;i<2;++i)
 		size[i]=sSize[i];
+	
+	/* Initialize the pixel depth correction buffer: */
+	pixelDepthCorrection=new PixelDepthCorrection[size[1]*size[0]];
+	PixelDepthCorrection* pdcPtr=pixelDepthCorrection;
+	for(unsigned int y=0;y<size[1];++y)
+		for(unsigned int x=0;x<size[0];++x,++pdcPtr)
+			{
+			pdcPtr->scale=1.0f;
+			pdcPtr->offset=0.0;
+			}
 	
 	/* Initialize the input frame slot: */
 	inputFrameVersion=0;
@@ -291,16 +231,16 @@ FrameFilter::FrameFilter(const int sSize[2],int sNumAveragingSlots,const FrameFi
 	averagingBuffer=new RawDepth[numAveragingSlots*size[1]*size[0]];
 	RawDepth* abPtr=averagingBuffer;
 	for(int i=0;i<numAveragingSlots;++i)
-		for(int y=0;y<size[1];++y)
-			for(int x=0;x<size[0];++x,++abPtr)
+		for(unsigned int y=0;y<size[1];++y)
+			for(unsigned int x=0;x<size[0];++x,++abPtr)
 				*abPtr=2048U; // Mark sample as invalid
 	averagingSlotIndex=0;
 	
 	/* Initialize the statistics buffer: */
 	statBuffer=new unsigned int[size[1]*size[0]*3];
 	unsigned int* sbPtr=statBuffer;
-	for(int y=0;y<size[1];++y)
-		for(int x=0;x<size[0];++x)
+	for(unsigned int y=0;y<size[1];++y)
+		for(unsigned int x=0;x<size[0];++x)
 			for(int i=0;i<3;++i,++sbPtr)
 				*sbPtr=0;
 	
@@ -322,8 +262,8 @@ FrameFilter::FrameFilter(const int sSize[2],int sNumAveragingSlots,const FrameFi
 	/* Initialize the valid buffer: */
 	validBuffer=new float[size[1]*size[0]];
 	float* vbPtr=validBuffer;
-	for(int y=0;y<size[1];++y)
-		for(int x=0;x<size[0];++x,++vbPtr)
+	for(unsigned int y=0;y<size[1];++y)
+		for(unsigned int x=0;x<size[0];++x,++vbPtr)
 			*vbPtr=float(-((double(x)+0.5)*basePlaneDic[0]+(double(y)+0.5)*basePlaneDic[1]+basePlaneDic[3])/basePlaneDic[2]);
 	
 	/* Start the filtering thread: */
@@ -342,17 +282,19 @@ FrameFilter::~FrameFilter(void)
 	filterThread.join();
 	
 	/* Release all allocated buffers: */
+	delete[] pixelDepthCorrection;
 	delete[] averagingBuffer;
 	delete[] statBuffer;
 	delete[] validBuffer;
 	delete outputFrameFunction;
 	}
 
-void FrameFilter::setDepthCorrection(const Kinect::FrameBuffer& newDepthCorrection)
+void FrameFilter::setDepthCorrection(const Kinect::FrameSource::DepthCorrection& newDepthCorrection)
 	{
-	/* Enable per-pixel depth correction: */
-	hasDepthCorrection=true;
-	depthCorrection=newDepthCorrection;
+	delete[] pixelDepthCorrection;
+	
+	/* Evaluate the given depth correction parameters on the depth frame: */
+	pixelDepthCorrection=newDepthCorrection.getPixelCorrection(size);
 	}
 
 void FrameFilter::setValidDepthInterval(unsigned int newMinDepth,unsigned int newMaxDepth)

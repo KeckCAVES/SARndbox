@@ -1,7 +1,7 @@
 /***********************************************************************
 RainMaker - Class to detect objects moving through a given range of
 depths in a depth image sequence to trigger rainfall on virtual terrain.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -64,9 +64,9 @@ class RainMaker
 	
 	/* Elements: */
 	private:
-	int depthSize[2]; // Width and height of incoming depth frames
+	unsigned int depthSize[2]; // Width and height of incoming depth frames
 	bool depthIsFloat; // Flag whether the incoming depth frames have float pixel values
-	int colorSize[2]; // Width and height of incoming color frames
+	unsigned int colorSize[2]; // Width and height of incoming color frames
 	PTransform depthProjection; // Projective transformation from depth image space to camera space
 	PTransform colorProjection; // Projective transformation from camera space to color image space
 	Geometry::Matrix<float,3,4> colorDepthHomography; // Homography from 3D depth image space into 2D color image space
@@ -89,7 +89,7 @@ class RainMaker
 	
 	/* Constructors and destructors: */
 	public:
-	RainMaker(const int sDepthSize[2],const int sColorSize[2],const PTransform& sDepthProjection,const PTransform& sColorProjection,const Plane& basePlane,double minElevation,double maxElevation,int sMinBlobSize); // Creates an object detector for frames of the given size and the given range of elevation values relative to the given base plane in camera space
+	RainMaker(const unsigned int sDepthSize[2],const unsigned int sColorSize[2],const PTransform& sDepthProjection,const PTransform& sColorProjection,const Plane& basePlane,double minElevation,double maxElevation,int sMinBlobSize); // Creates an object detector for frames of the given size and the given range of elevation values relative to the given base plane in camera space
 	~RainMaker(void); // Destroys the object detector
 	
 	/* Methods: */

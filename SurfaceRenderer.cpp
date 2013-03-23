@@ -1,7 +1,7 @@
 /***********************************************************************
 SurfaceRenderer - Class to render a surface defined by a regular grid in
 depth image space.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -439,7 +439,7 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 	return result;
 	}
 
-SurfaceRenderer::SurfaceRenderer(const int sSize[2],const SurfaceRenderer::PTransform& sDepthProjection,const SurfaceRenderer::Plane& sBasePlane)
+SurfaceRenderer::SurfaceRenderer(const unsigned int sSize[2],const SurfaceRenderer::PTransform& sDepthProjection,const SurfaceRenderer::Plane& sBasePlane)
 	:depthProjection(sDepthProjection),
 	 basePlane(sBasePlane),
 	 usePreboundDepthTexture(false),
@@ -491,8 +491,8 @@ SurfaceRenderer::SurfaceRenderer(const int sSize[2],const SurfaceRenderer::PTran
 	/* Initialize the depth image: */
 	depthImage=Kinect::FrameBuffer(size[0],size[1],size[1]*size[0]*sizeof(float));
 	float* diPtr=static_cast<float*>(depthImage.getBuffer());
-	for(int y=0;y<size[1];++y)
-		for(int x=0;x<size[0];++x,++diPtr)
+	for(unsigned int y=0;y<size[1];++y)
+		for(unsigned int x=0;x<size[0];++x,++diPtr)
 			*diPtr=0.0f;
 	}
 
@@ -507,8 +507,8 @@ void SurfaceRenderer::initContext(GLContextData& contextData) const
 	glBindBufferARB(GL_ARRAY_BUFFER_ARB,dataItem->vertexBuffer);
 	glBufferDataARB(GL_ARRAY_BUFFER_ARB,size[1]*size[0]*sizeof(Vertex),0,GL_STATIC_DRAW_ARB);
 	Vertex* vPtr=static_cast<Vertex*>(glMapBufferARB(GL_ARRAY_BUFFER_ARB,GL_WRITE_ONLY_ARB));
-	for(int y=0;y<size[1];++y)
-		for(int x=0;x<size[0];++x,++vPtr)
+	for(unsigned int y=0;y<size[1];++y)
+		for(unsigned int x=0;x<size[0];++x,++vPtr)
 			{
 			vPtr->position[0]=float(x)+0.5f;
 			vPtr->position[1]=float(y)+0.5f;
@@ -521,8 +521,8 @@ void SurfaceRenderer::initContext(GLContextData& contextData) const
 	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,dataItem->indexBuffer);
 	glBufferDataARB(GL_ELEMENT_ARRAY_BUFFER_ARB,(size[1]-1)*size[0]*2*sizeof(GLuint),0,GL_STATIC_DRAW_ARB);
 	GLuint* iPtr=static_cast<GLuint*>(glMapBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,GL_WRITE_ONLY_ARB));
-	for(int y=1;y<size[1];++y)
-		for(int x=0;x<size[0];++x,iPtr+=2)
+	for(unsigned int y=1;y<size[1];++y)
+		for(unsigned int x=0;x<size[0];++x,iPtr+=2)
 			{
 			iPtr[0]=GLuint(y*size[0]+x);
 			iPtr[1]=GLuint((y-1)*size[0]+x);
@@ -727,7 +727,7 @@ void SurfaceRenderer::glRenderDepthOnly(const SurfaceRenderer::PTransform& model
 	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
 	GLVertexArrayParts::enable(Vertex::getPartsMask());
 	glVertexPointer(static_cast<const Vertex*>(0));
-	for(int y=1;y<size[1];++y)
+	for(unsigned int y=1;y<size[1];++y)
 		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
 	GLVertexArrayParts::disable(Vertex::getPartsMask());
 	
@@ -784,7 +784,7 @@ void SurfaceRenderer::glRenderElevation(GLContextData& contextData) const
 	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
 	GLVertexArrayParts::enable(Vertex::getPartsMask());
 	glVertexPointer(static_cast<const Vertex*>(0));
-	for(int y=1;y<size[1];++y)
+	for(unsigned int y=1;y<size[1];++y)
 		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
 	GLVertexArrayParts::disable(Vertex::getPartsMask());
 	
@@ -936,7 +936,7 @@ void SurfaceRenderer::glPrepareContourLines(GLContextData& contextData) const
 	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
 	GLVertexArrayParts::enable(Vertex::getPartsMask());
 	glVertexPointer(static_cast<const Vertex*>(0));
-	for(int y=1;y<size[1];++y)
+	for(unsigned int y=1;y<size[1];++y)
 		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
 	GLVertexArrayParts::disable(Vertex::getPartsMask());
 	
@@ -1098,7 +1098,7 @@ void SurfaceRenderer::glRenderSinglePass(GLuint heightColorMapTexture,GLContextD
 	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
 	GLVertexArrayParts::enable(Vertex::getPartsMask());
 	glVertexPointer(static_cast<const Vertex*>(0));
-	for(int y=1;y<size[1];++y)
+	for(unsigned int y=1;y<size[1];++y)
 		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
 	GLVertexArrayParts::disable(Vertex::getPartsMask());
 	
@@ -1223,7 +1223,7 @@ void SurfaceRenderer::glRenderGlobalAmbientHeightMap(GLuint heightColorMapTextur
 	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
 	GLVertexArrayParts::enable(Vertex::getPartsMask());
 	glVertexPointer(static_cast<const Vertex*>(0));
-	for(int y=1;y<size[1];++y)
+	for(unsigned int y=1;y<size[1];++y)
 		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
 	GLVertexArrayParts::disable(Vertex::getPartsMask());
 	
@@ -1344,7 +1344,7 @@ void SurfaceRenderer::glRenderShadowedIlluminatedHeightMap(GLuint heightColorMap
 	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
 	GLVertexArrayParts::enable(Vertex::getPartsMask());
 	glVertexPointer(static_cast<const Vertex*>(0));
-	for(int y=1;y<size[1];++y)
+	for(unsigned int y=1;y<size[1];++y)
 		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
 	GLVertexArrayParts::disable(Vertex::getPartsMask());
 	

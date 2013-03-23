@@ -1,6 +1,6 @@
 /***********************************************************************
 Sandbox - Vrui application to drive an augmented reality sandbox.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <vector>
 #include <stdexcept>
 #include <iostream>
+#include <Misc/SelfDestructPointer.h>
 #include <Misc/FunctionCalls.h>
 #include <Misc/FileNameExtensions.h>
 #include <IO/File.h>
@@ -453,9 +454,9 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	unsigned int maxVariance=2;
 	bool useContourLines=true;
 	GLfloat contourLineSpacing=0.75f;
-	int wtSize[2];
-	wtSize[0]=640;
-	wtSize[1]=480;
+	unsigned int wtSize[2];
+	wtSize[0]=640U;
+	wtSize[1]=480U;
 	GLfloat waterOpacity=2.0f;
 	bool renderWaterSurface=false;
 	double rainElevationMin=-1000.0;
@@ -519,7 +520,7 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 				for(int j=0;j<2;++j)
 					{
 					++i;
-					wtSize[j]=atoi(argv[i]);
+					wtSize[j]=(unsigned int)(atoi(argv[i]));
 					}
 				}
 			else if(strcasecmp(argv[i]+1,"ws")==0)
@@ -641,13 +642,10 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	camera->setCompressDepthFrames(true);
 	camera->setSmoothDepthFrames(false);
 	for(int i=0;i<2;++i)
-		frameSize[i]=int(camera->getActualFrameSize(Kinect::FrameSource::DEPTH)[i]);
+		frameSize[i]=camera->getActualFrameSize(Kinect::FrameSource::DEPTH)[i];
 	
-	/* Check if the camera has per-pixel depth correction: */
-	bool hasDepthCorrection=camera->hasDepthCorrectionCoefficients();
-	Kinect::FrameBuffer depthCorrection;
-	if(hasDepthCorrection)
-		depthCorrection=camera->getDepthCorrectionCoefficients();
+	/* Get the camera's per-pixel depth correction parameters: */
+	Misc::SelfDestructPointer<Kinect::FrameSource::DepthCorrection> depthCorrection(camera->getDepthCorrectionParameters());
 	
 	/* Get the camera's intrinsic parameters: */
 	cameraIps=camera->getIntrinsicParameters();
@@ -723,8 +721,7 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	
 	/* Create the frame filter object: */
 	frameFilter=new FrameFilter(frameSize,numAveragingSlots,cameraIps.depthProjection,basePlane);
-	if(hasDepthCorrection)
-		frameFilter->setDepthCorrection(depthCorrection);
+	frameFilter->setDepthCorrection(*depthCorrection);
 	frameFilter->setValidElevationInterval(cameraIps.depthProjection,basePlane,elevationMin,elevationMax);
 	frameFilter->setStableParameters(minNumSamples,maxVariance);
 	frameFilter->setSpatialFilter(true);
@@ -737,17 +734,13 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 		rainElevationMax=rainElevationMin;
 	
 	/* Create the rain maker object: */
-	int colorFrameSize[2];
-	for(int i=0;i<2;++i)
-		colorFrameSize[i]=int(camera->getActualFrameSize(Kinect::FrameSource::COLOR)[i]);
-	rainMaker=new RainMaker(frameSize,colorFrameSize,cameraIps.depthProjection,cameraIps.colorProjection,basePlane,rainElevationMin,rainElevationMax,20);
+	rainMaker=new RainMaker(frameSize,camera->getActualFrameSize(Kinect::FrameSource::COLOR),cameraIps.depthProjection,cameraIps.colorProjection,basePlane,rainElevationMin,rainElevationMax,20);
 	rainMaker->setDepthIsFloat(true);
 	rainMaker->setOutputBlobsFunction(Misc::createFunctionCall(this,&Sandbox::receiveRainObjects));
 	
 	/* Create a second frame filter for the rain maker: */
 	rmFrameFilter=new FrameFilter(frameSize,10,cameraIps.depthProjection,basePlane);
-	if(hasDepthCorrection)
-		rmFrameFilter->setDepthCorrection(depthCorrection);
+	rmFrameFilter->setDepthCorrection(*depthCorrection);
 	rmFrameFilter->setValidElevationInterval(cameraIps.depthProjection,basePlane,rainElevationMin,rainElevationMax);
 	rmFrameFilter->setStableParameters(5,3);
 	rmFrameFilter->setRetainValids(false);
