@@ -1,6 +1,6 @@
 /***********************************************************************
 Sandbox - Vrui application to drive an augmented reality sandbox.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -144,7 +144,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	private:
 	USB::Context usbContext; // USB context for the Kinect camera device
 	Kinect::Camera* camera; // The Kinect camera device
-	int frameSize[2]; // Width and height of the camera's depth frames
+	unsigned int frameSize[2]; // Width and height of the camera's depth frames
 	Kinect::FrameSource::IntrinsicParameters cameraIps; // Intrinsic parameters of the Kinect camera
 	FrameFilter* frameFilter; // Processing object to filter raw depth frames from the Kinect camera
 	bool pauseUpdates; // Pauses updates of the topography

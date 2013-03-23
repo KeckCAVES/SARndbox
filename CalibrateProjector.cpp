@@ -1,7 +1,7 @@
 /***********************************************************************
 CalibrateProjector - Utility to calculate the calibration transformation
 of a projector into a Kinect-captured 3D space.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -121,28 +121,33 @@ class CalibrateProjector:public Vrui::Application
 	{
 	/* Embedded classes: */
 	private:
+	typedef Kinect::FrameSource::DepthCorrection::PixelCorrection PixelDepthCorrection; // Type for per-pixel depth correction factors
+	
 	class BackgroundProperty // Functor class to identify non-background pixels in averaged depth frames
 		{
 		/* Elements: */
 		private:
+		unsigned int size[2]; // Size of background frame
 		const float* backgroundFrame; // Pointer to the background frame
 		
 		/* Constructors and destructors: */
 		public:
-		BackgroundProperty(const float* sBackgroundFrame)
+		BackgroundProperty(const unsigned int sSize[2],const float* sBackgroundFrame)
 			:backgroundFrame(sBackgroundFrame)
 			{
+			for(int i=0;i<2;++i)
+				size[i]=sSize[i];
 			}
 		
 		/* Methods: */
 		public:
-		bool operator()(int x,int y,const float& pixel) const
+		bool operator()(unsigned int x,unsigned int y,const float& pixel) const
 			{
-			return pixel<backgroundFrame[y*640+x];
+			return pixel<backgroundFrame[y*size[0]+x];
 			}
-		bool operator()(int x,int y,const unsigned short& pixel) const
+		bool operator()(unsigned int x,unsigned int y,const unsigned short& pixel) const
 			{
-			return float(pixel)<backgroundFrame[y*640+x];
+			return float(pixel)<backgroundFrame[y*size[0]+x];
 			}
 		};
 	
@@ -183,13 +188,14 @@ class CalibrateProjector:public Vrui::Application
 	private:
 	USB::Context usbContext; // USB device context
 	Kinect::Camera* camera; // Pointer to Kinect camera defining the object space
-	bool hasDepthCorrection; // Flag whether the camera has per-pixel depth correction coefficients
-	Kinect::FrameBuffer depthCorrection; // Buffer of per-pixel depth correction coefficients
+	unsigned int frameSize[2]; // Size of the Kinect camera's depth frames in pixels
+	PixelDepthCorrection* pixelDepthCorrection; // Buffer of per-pixel depth correction coefficients
 	Kinect::FrameSource::IntrinsicParameters cameraIps; // Intrinsic parameters of the Kinect camera
 	Threads::TripleBuffer<Kinect::FrameBuffer> rawFrames; // Triple buffer for raw depth frames from the Kinect camera
 	std::vector<Blob<unsigned short> > rawBlobs; // List of foreground blobs found in the current raw depth frame
 	int numCaptureFrames; // Number of frames to capture per tie point
 	bool captureMin; // Flag whether to capture average or minimum pixel values
+	bool capturing; // flag whether the background thread is currently capturing depth frames
 	Threads::Mutex ndfMutex; // Mutex protecting the depth frame capture counter
 	Threads::Cond ndfCond; // Condition variable to signal that depth frame capture is done
 	int numDepthFrames; // Number of depth frames left to average
@@ -205,7 +211,7 @@ class CalibrateProjector:public Vrui::Application
 	
 	/* Constructors and destructors: */
 	public:
-	CalibrateProjector(int& argc,char**& argv,char**& appDefaults);
+	CalibrateProjector(int& argc,char**& argv);
 	virtual ~CalibrateProjector(void);
 	
 	/* Methods from Vrui::Application: */
@@ -213,6 +219,7 @@ class CalibrateProjector:public Vrui::Application
 	virtual void display(GLContextData& contextData) const;
 	
 	/* New methods: */
+	void startBackgroundCapture(void); // Starts capturing a background frame
 	void startCapture(void); // Starts capturing an averaged depth frame
 	void addTiePoint(void); // Adds a calibration tie point based on a previously captured depth frame
 	void calcCalibration(void); // Calculates the calibration transformation after all tie points have been collected
@@ -246,7 +253,12 @@ void CalibrateProjector::CaptureTool::buttonCallback(int buttonSlotIndex,Vrui::I
 	{
 	/* Start capturing a depth frame if the button was just pressed: */
 	if(cbData->newButtonState)
-		application->startCapture();
+		{
+		if(buttonSlotIndex==0)
+			application->startCapture();
+		else
+			application->startBackgroundCapture();
+		}
 	}
 
 /***********************************
@@ -268,8 +280,8 @@ void CalibrateProjector::depthStreamingCallback(const Kinect::FrameBuffer& frame
 		int* dsPtr=avgDepthSum;
 		if(captureMin)
 			{
-			for(unsigned int y=0;y<480;++y)
-				for(unsigned int x=0;x<640;++x,++sPtr,++dPtr)
+			for(unsigned int y=0;y<frameSize[1];++y)
+				for(unsigned int x=0;x<frameSize[0];++x,++sPtr,++dPtr)
 					{
 					if(*dPtr>float(*sPtr))
 						*dPtr=float(*sPtr);
@@ -277,8 +289,8 @@ void CalibrateProjector::depthStreamingCallback(const Kinect::FrameBuffer& frame
 			}
 		else
 			{
-			for(unsigned int y=0;y<480;++y)
-				for(unsigned int x=0;x<640;++x,++sPtr,++dPtr,++dsPtr)
+			for(unsigned int y=0;y<frameSize[1];++y)
+				for(unsigned int x=0;x<frameSize[0];++x,++sPtr,++dPtr,++dsPtr)
 					{
 					/* Accumulate the pixel only if it is a valid depth reading: */
 					if(*sPtr!=Kinect::FrameSource::invalidDepth)
@@ -297,25 +309,28 @@ void CalibrateProjector::depthStreamingCallback(const Kinect::FrameBuffer& frame
 			ndfCond.broadcast();
 			}
 		}
+	
 	/* Update the foreground thread: */
 	Vrui::requestUpdate();
 	}
 
-CalibrateProjector::CalibrateProjector(int& argc,char**& argv,char**& appDefaults)
-	:Vrui::Application(argc,argv,appDefaults),
+CalibrateProjector::CalibrateProjector(int& argc,char**& argv)
+	:Vrui::Application(argc,argv),
 	 camera(0),
-	 hasDepthCorrection(false),
+	 pixelDepthCorrection(0),
 	 numCaptureFrames(60),
 	 captureMin(true),
 	 numDepthFrames(-1),
-	 avgDepthFrame(new float[640*480]),
-	 avgDepthSum(new int[640*480]),
-	 backgroundFrame(new float[640*480])
+	 capturing(false),
+	 avgDepthFrame(0),
+	 avgDepthSum(0),
+	 backgroundFrame(0)
 	{
 	/* Register the custom tool class: */
 	CaptureToolFactory* toolFactory1=new CaptureToolFactory("CaptureTool","Capture",0,*Vrui::getToolManager());
-	toolFactory1->setNumButtons(1);
+	toolFactory1->setNumButtons(2);
 	toolFactory1->setButtonFunction(0,"Capture Frame");
+	toolFactory1->setButtonFunction(1,"Capture Background Frame");
 	Vrui::getToolManager()->addClass(toolFactory1,Vrui::ToolManager::defaultToolFactoryDestructor);
 	
 	/* Process command line parameters: */
@@ -380,57 +395,31 @@ CalibrateProjector::CalibrateProjector(int& argc,char**& argv,char**& appDefault
 	
 	/* Open the Kinect camera device: */
 	camera=new Kinect::Camera(usbContext,cameraIndex);
+	camera->setCompressDepthFrames(true);
+	camera->setSmoothDepthFrames(false);
 	
-	/* Check if the camera has per-pixel depth correction coefficients: */
-	hasDepthCorrection=camera->hasDepthCorrectionCoefficients();
-	if(hasDepthCorrection)
-		{
-		/* Retrieve the per-pixel depth correction coefficients: */
-		depthCorrection=camera->getDepthCorrectionCoefficients();
-		}
+	/* Get the camera's depth frame size: */
+	for(int i=0;i<2;++i)
+		frameSize[i]=camera->getActualFrameSize(Kinect::FrameSource::DEPTH)[i];
+	
+	/* Get the camera's depth correction coefficients and create the per-pixel correction buffer: */
+	Kinect::FrameSource::DepthCorrection* dc=camera->getDepthCorrectionParameters();
+	pixelDepthCorrection=dc->getPixelCorrection(frameSize);
+	delete dc;
 	
 	/* Get the camera's intrinsic parameters: */
 	cameraIps=camera->getIntrinsicParameters();
 	
+	/* Allocate the averaging buffers: */
+	avgDepthFrame=new float[frameSize[1]*frameSize[0]];
+	avgDepthSum=new int[frameSize[1]*frameSize[0]];
+	backgroundFrame=new float[frameSize[1]*frameSize[0]];
+	
 	/* Start streaming depth frames: */
 	camera->startStreaming(0,Misc::createFunctionCall(this,&CalibrateProjector::depthStreamingCallback));
 	
-	/* Capture a depth frame to use as background: */
-	std::cout<<"CalibrateProjector: Capturing background frame..."<<std::flush;
-	float* fPtr=avgDepthFrame;
-	for(unsigned int y=0;y<480;++y)
-		for(unsigned int x=0;x<640;++x,++fPtr)
-			*fPtr=float(Kinect::FrameSource::invalidDepth);
-	
-	{
-	Threads::Mutex::Lock ndfLock(ndfMutex);
-	numDepthFrames=150;
-	while(numDepthFrames>0)
-		ndfCond.wait(ndfMutex);
-	
-	/* Finish the capture process: */
-	numDepthFrames=-1;
-	captureMin=false;
-	}
-	
-	/* Copy the depth frame into the background frame: */
-	float* sPtr=avgDepthFrame;
-	float* dPtr=backgroundFrame;
-	if(hasDepthCorrection)
-		{
-		const Kinect::FrameSource::PixelDepthCorrection* pdcPtr=static_cast<const Kinect::FrameSource::PixelDepthCorrection*>(depthCorrection.getBuffer());
-		for(unsigned int y=0;y<480;++y)
-			for(unsigned int x=0;x<640;++x,++sPtr,++pdcPtr,++dPtr)
-				*dPtr=(*sPtr)*pdcPtr->scale+pdcPtr->offset-5.0f; // Subtract small fuzz value
-		}
-	else
-		{
-		for(unsigned int y=0;y<480;++y)
-			for(unsigned int x=0;x<640;++x,++sPtr,++dPtr)
-				*dPtr=*sPtr-5.0f; // Subtract small fuzz value
-		}
-	
-	std::cout<<" done"<<std::endl;
+	/* Start capturing the initial background frame: */
+	startBackgroundCapture();
 	}
 
 CalibrateProjector::~CalibrateProjector(void)
@@ -439,6 +428,8 @@ CalibrateProjector::~CalibrateProjector(void)
 	camera->stopStreaming();
 	delete camera;
 	
+	/* Delete allocated buffers: */
+	delete[] pixelDepthCorrection;
 	delete[] avgDepthFrame;
 	delete[] avgDepthSum;
 	delete[] backgroundFrame;
@@ -450,56 +441,61 @@ void CalibrateProjector::frame(void)
 	if(rawFrames.lockNewValue())
 		{
 		/* Create blobs for all non-background pixels: */
-		const int size[2]={640,480};
-		BackgroundProperty bp(backgroundFrame);
-		rawBlobs=findBlobs(size,static_cast<unsigned short*>(rawFrames.getLockedValue().getBuffer()),bp);
+		BackgroundProperty bp(frameSize,backgroundFrame);
+		rawBlobs=findBlobs(frameSize,static_cast<unsigned short*>(rawFrames.getLockedValue().getBuffer()),bp);
 		}
 	
 	/* Check if a depth frame capture just finished: */
+	bool processBackgroundFrame=false;
 	bool processDepthFrame=false;
 	{
 	Threads::Mutex::Lock ndfLock(ndfMutex);
 	if(numDepthFrames==0)
 		{
-		/* Process the average frame later: */
 		std::cout<<" done"<<std::endl;
-		processDepthFrame=true;
+		if(captureMin)
+			{
+			/* Process the background frame later: */
+			processBackgroundFrame=true;
+			}
+		else
+			{
+			/* Process the average frame later: */
+			processDepthFrame=true;
+			}
 		
 		/* Finish the capture process: */
 		numDepthFrames=-1;
+		capturing=false;
 		}
 	}
+	
+	if(processBackgroundFrame)
+		{
+		/* Copy the depth frame into the background frame: */
+		float* sPtr=avgDepthFrame;
+		float* dPtr=backgroundFrame;
+		const PixelDepthCorrection* pdcPtr=pixelDepthCorrection;
+		for(unsigned int y=0;y<frameSize[1];++y)
+			for(unsigned int x=0;x<frameSize[0];++x,++sPtr,++pdcPtr,++dPtr)
+				*dPtr=pdcPtr->correct(*sPtr)-5.0f; // Subtract small fuzz value
+		}
 	
 	if(processDepthFrame)
 		{
 		/* Finish averaging the depth frame: */
 		float* dPtr=avgDepthFrame;
 		int* dsPtr=avgDepthSum;
-		if(hasDepthCorrection)
-			{
-			const Kinect::FrameSource::PixelDepthCorrection* pdcPtr=static_cast<const Kinect::FrameSource::PixelDepthCorrection*>(depthCorrection.getBuffer());
-			for(unsigned int y=0;y<480;++y)
-				for(unsigned int x=0;x<640;++x,++dPtr,++dsPtr,++pdcPtr)
-					{
-					/* Only use the pixel if it was sampled in at least half the frames: */
-					if(*dsPtr>=numCaptureFrames/2)
-						*dPtr=((*dPtr)/float(*dsPtr))*pdcPtr->scale+pdcPtr->offset;
-					else
-						*dPtr=float(Kinect::FrameSource::invalidDepth);
-					}
-			}
-		else
-			{
-			for(unsigned int y=0;y<480;++y)
-				for(unsigned int x=0;x<640;++x,++dPtr,++dsPtr)
-					{
-					/* Only use the pixel if it was sampled in at least half the frames: */
-					if(*dsPtr>=numCaptureFrames/2)
-						*dPtr=(*dPtr)/float(*dsPtr);
-					else
-						*dPtr=float(Kinect::FrameSource::invalidDepth);
-					}
-			}
+		const PixelDepthCorrection* pdcPtr=pixelDepthCorrection;
+		for(unsigned int y=0;y<frameSize[1];++y)
+			for(unsigned int x=0;x<frameSize[0];++x,++dPtr,++dsPtr,++pdcPtr)
+				{
+				/* Only use the pixel if it was sampled in at least half the frames: */
+				if(*dsPtr>=numCaptureFrames/2)
+					*dPtr=pdcPtr->correct((*dPtr)/float(*dsPtr));
+				else
+					*dPtr=pdcPtr->correct(Kinect::FrameSource::invalidDepth);
+				}
 		
 		/* Add a calibration tie point based on the captured depth frame: */	
 		addTiePoint();
@@ -508,13 +504,6 @@ void CalibrateProjector::frame(void)
 
 void CalibrateProjector::display(GLContextData& contextData) const
 	{
-	/* Calculate the screen-space position of the next tie point: */
-	int pointIndex=int(tiePoints.size());
-	int xIndex=pointIndex%numTiePoints[0];
-	int yIndex=(pointIndex/numTiePoints[0])%numTiePoints[1];
-	int x=(xIndex+1)*imageSize[0]/(numTiePoints[0]+1);
-	int y=(yIndex+1)*imageSize[1]/(numTiePoints[1]+1);
-	
 	glPushAttrib(GL_ENABLE_BIT|GL_LINE_BIT);
 	glDisable(GL_LIGHTING);
 	glLineWidth(1.0f);
@@ -527,25 +516,47 @@ void CalibrateProjector::display(GLContextData& contextData) const
 	glLoadIdentity();
 	glOrtho(0.0,double(imageSize[0]),0.0,double(imageSize[1]),-1.0,1.0);
 	
-	glBegin(GL_LINES);
-	glColor3f(1.0f,1.0f,1.0f);
-	glVertex2f(0.0f,float(y)+0.5f);
-	glVertex2f(float(imageSize[0]),float(y)+0.5f);
-	glVertex2f(float(x)+0.5f,0.0f);
-	glVertex2f(float(x)+0.5f,float(imageSize[1]));
-	glEnd();
-	
-	/* Draw all foreground blobs in the current raw depth frame: */
-	glScaled(double(imageSize[0])/640.0,double(imageSize[1])/480.0,1.0);
-	for(std::vector<Blob<unsigned short> >::const_iterator bIt=rawBlobs.begin();bIt!=rawBlobs.end();++bIt)
+	if(capturing&&captureMin)
 		{
-		glColor3f(0.0f,1.0f,0.0f);
-		glBegin(GL_LINE_LOOP);
-		glVertex2i(bIt->min[0],bIt->min[1]);
-		glVertex2i(bIt->max[0],bIt->min[1]);
-		glVertex2i(bIt->max[0],bIt->max[1]);
-		glVertex2i(bIt->min[0],bIt->max[1]);
+		/* Indicate that a background frame is being captured: */
+		glBegin(GL_QUADS);
+		glColor3f(1.0f,0.0f,0.0f);
+		glVertex2f(0.0f,0.0f);
+		glVertex2f(float(imageSize[0]),0.0f);
+		glVertex2f(float(imageSize[0]),float(imageSize[1]));
+		glVertex2f(0.0f,float(imageSize[1]));
 		glEnd();
+		}
+	else
+		{
+		/* Calculate the screen-space position of the next tie point: */
+		int pointIndex=int(tiePoints.size());
+		int xIndex=pointIndex%numTiePoints[0];
+		int yIndex=(pointIndex/numTiePoints[0])%numTiePoints[1];
+		int x=(xIndex+1)*imageSize[0]/(numTiePoints[0]+1);
+		int y=(yIndex+1)*imageSize[1]/(numTiePoints[1]+1);
+		
+		/* Draw the next tie point: */
+		glBegin(GL_LINES);
+		glColor3f(1.0f,1.0f,1.0f);
+		glVertex2f(0.0f,float(y)+0.5f);
+		glVertex2f(float(imageSize[0]),float(y)+0.5f);
+		glVertex2f(float(x)+0.5f,0.0f);
+		glVertex2f(float(x)+0.5f,float(imageSize[1]));
+		glEnd();
+		
+		/* Draw all foreground blobs in the current raw depth frame: */
+		glScaled(double(imageSize[0])/double(frameSize[0]),double(imageSize[1])/double(frameSize[1]),1.0);
+		for(std::vector<Blob<unsigned short> >::const_iterator bIt=rawBlobs.begin();bIt!=rawBlobs.end();++bIt)
+			{
+			glColor3f(0.0f,1.0f,0.0f);
+			glBegin(GL_LINE_LOOP);
+			glVertex2i(bIt->min[0],bIt->min[1]);
+			glVertex2i(bIt->max[0],bIt->min[1]);
+			glVertex2i(bIt->max[0],bIt->max[1]);
+			glVertex2i(bIt->min[0],bIt->max[1]);
+			glEnd();
+			}
 		}
 	
 	glPopMatrix();
@@ -553,6 +564,29 @@ void CalibrateProjector::display(GLContextData& contextData) const
 	glPopMatrix();
 	
 	glPopAttrib();
+	}
+
+void CalibrateProjector::startBackgroundCapture(void)
+	{
+	Threads::Mutex::Lock ndfLock(ndfMutex);
+	
+	/* Do nothing if already capturing a depth frame: */
+	if(numDepthFrames>=0)
+		return;
+	
+	/* Reset the background frame: */
+	float* fPtr=avgDepthFrame;
+	for(unsigned int y=0;y<frameSize[1];++y)
+		for(unsigned int x=0;x<frameSize[0];++x,++fPtr)
+			*fPtr=float(Kinect::FrameSource::invalidDepth);
+	
+	/* Request a sequence of raw depth frames: */
+	numDepthFrames=120;
+	captureMin=true;
+	capturing=true;
+	
+	/* Background thread will capture frames and count back to zero */
+	std::cout<<"CalibrateProjector: Capturing "<<numDepthFrames<<" background frames..."<<std::flush;
 	}
 
 void CalibrateProjector::startCapture(void)
@@ -566,8 +600,8 @@ void CalibrateProjector::startCapture(void)
 	/* Reset the average depth frame: */
 	float* dPtr=avgDepthFrame;
 	int* dsPtr=avgDepthSum;
-	for(unsigned int y=0;y<480;++y)
-		for(unsigned int x=0;x<640;++x,++dPtr,++dsPtr)
+	for(unsigned int y=0;y<frameSize[1];++y)
+		for(unsigned int x=0;x<frameSize[0];++x,++dPtr,++dsPtr)
 			{
 			*dPtr=0.0f;
 			*dsPtr=0;
@@ -575,17 +609,18 @@ void CalibrateProjector::startCapture(void)
 	
 	/* Request a sequence of raw depth frames: */
 	numDepthFrames=numCaptureFrames;
+	captureMin=false;
+	capturing=true;
 	
 	/* Background thread will capture frames and count back to zero */
-	std::cout<<"CalibrateProjector: Capturing "<<numCaptureFrames<<" depth frame..."<<std::flush;
+	std::cout<<"CalibrateProjector: Capturing "<<numCaptureFrames<<" depth frames..."<<std::flush;
 	}
 
 void CalibrateProjector::addTiePoint(void)
 	{
 	/* Create blobs for all non-background pixels: */
-	const int size[2]={640,480};
-	BackgroundProperty bp(backgroundFrame);
-	std::vector<Blob<float> > blobs=findBlobs(size,avgDepthFrame,bp);
+	BackgroundProperty bp(frameSize,backgroundFrame);
+	std::vector<Blob<float> > blobs=findBlobs(frameSize,avgDepthFrame,bp);
 	
 	/* Use the largest blob to create a tie point: */
 	std::vector<Blob<float> >::iterator largestBIt=blobs.end();
@@ -627,16 +662,16 @@ void CalibrateProjector::addTiePoint(void)
 			calcCalibration();
 			}
 		
-		#if 0
+		#if 1
 		{
 		Misc::File capFrame("CapturedFrame.ppm","wb",Misc::File::DontCare);
 		fprintf(capFrame.getFilePtr(),"P6\n");
-		fprintf(capFrame.getFilePtr(),"640 480\n");
+		fprintf(capFrame.getFilePtr(),"%u %u\n",frameSize[0],frameSize[1]);
 		fprintf(capFrame.getFilePtr(),"255\n");
 		float* fPtr=avgDepthFrame;
 		float* bPtr=backgroundFrame;
-		for(int y=0;y<480;++y)
-			for(int x=0;x<640;++x,++fPtr,++bPtr)
+		for(unsigned int y=0;y<frameSize[1];++y)
+			for(unsigned int x=0;x<frameSize[0];++x,++fPtr,++bPtr)
 				{
 				unsigned char col[3];
 				for(int i=0;i<3;++i)
@@ -660,12 +695,12 @@ void CalibrateProjector::addTiePoint(void)
 		{
 		Misc::File capFrame("CapturedFrame.ppm","wb",Misc::File::DontCare);
 		fprintf(capFrame.getFilePtr(),"P6\n");
-		fprintf(capFrame.getFilePtr(),"640 480\n");
+		fprintf(capFrame.getFilePtr(),"%u %u\n",frameSize[0],frameSize[1]);
 		fprintf(capFrame.getFilePtr(),"255\n");
 		float* fPtr=avgDepthFrame;
 		float* bPtr=backgroundFrame;
-		for(int y=0;y<480;++y)
-			for(int x=0;x<640;++x,++fPtr,++bPtr)
+		for(unsigned int y=0;y<frameSize[1];++y)
+			for(unsigned int x=0;x<frameSize[0];++x,++fPtr,++bPtr)
 				{
 				unsigned char col[3];
 				for(int i=0;i<3;++i)
@@ -822,8 +857,7 @@ int main(int argc,char* argv[])
 	{
 	try
 		{
-		char** appDefault=0;
-		CalibrateProjector app(argc,argv,appDefault);
+		CalibrateProjector app(argc,argv);
 		app.run();
 		}
 	catch(std::runtime_error err)

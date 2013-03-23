@@ -1,7 +1,7 @@
 /***********************************************************************
 SurfaceRenderer - Class to render a surface defined by a regular grid in
 depth image space.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -76,7 +76,7 @@ class SurfaceRenderer:public GLObject
 	
 	/* Elements: */
 	IO::FileMonitor fileMonitor; // Monitor to watch the renderer's external shader source files
-	int size[2]; // Width and height of the depth image
+	unsigned int size[2]; // Width and height of the depth image
 	PTransform depthProjection; // The transformation from depth image space to camera space
 	GLfloat depthProjectionMatrix[16]; // Same, in GLSL-compatible format
 	GLfloat tangentDepthProjectionMatrix[16]; // Depth projection for tangent planes in GLSL-compatible format
@@ -102,7 +102,7 @@ class SurfaceRenderer:public GLObject
 	
 	/* Constructors and destructors: */
 	public:
-	SurfaceRenderer(const int sSize[2],const PTransform& sDepthProjection,const Plane& sBasePlane); // Creates a renderer for the given image size, depth projection, and base plane
+	SurfaceRenderer(const unsigned int sSize[2],const PTransform& sDepthProjection,const Plane& sBasePlane); // Creates a renderer for the given image size, depth projection, and base plane
 	
 	/* Methods from GLObject: */
 	virtual void initContext(GLContextData& contextData) const;

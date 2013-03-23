@@ -2,7 +2,7 @@
 FrameFilter - Class to filter streams of depth frames arriving from a
 depth camera, with code to detect unstable values in each pixel, and
 fill holes resulting from invalid samples.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <Threads/Thread.h>
 #include <Threads/MutexCond.h>
 #include <Kinect/FrameBuffer.h>
+#include <Kinect/FrameSource.h>
 
 /* Forward declarations: */
 namespace Misc {
@@ -49,12 +50,12 @@ class FrameFilter
 	typedef Misc::FunctionCall<const Kinect::FrameBuffer&> OutputFrameFunction; // Type for functions called when a new output frame is ready
 	typedef Geometry::Plane<double,3> Plane;
 	typedef Geometry::ProjectiveTransformation<double,3> PTransform;
+	typedef Kinect::FrameSource::DepthCorrection::PixelCorrection PixelDepthCorrection; // Type for per-pixel depth correction factors
 	
 	/* Elements: */
 	private:
-	int size[2]; // Width and height of processed frames
-	bool hasDepthCorrection; // Flag whether the camera has per-pixel depth correction
-	Kinect::FrameBuffer depthCorrection; // Buffer of per-pixel depth correction coefficients
+	unsigned int size[2]; // Width and height of processed frames
+	PixelDepthCorrection* pixelDepthCorrection; // Buffer of per-pixel depth correction coefficients
 	Threads::MutexCond inputCond; // Condition variable to signal arrival of a new input frame
 	Kinect::FrameBuffer inputFrame; // The most recent input frame
 	unsigned int inputFrameVersion; // Version number of input frame
@@ -80,11 +81,11 @@ class FrameFilter
 	
 	/* Constructors and destructors: */
 	public:
-	FrameFilter(const int sSize[2],int sNumAveragingSlots,const PTransform& depthProjection,const Plane& basePlane); // Creates a filter for frames of the given size and the given running average length
+	FrameFilter(const unsigned int sSize[2],int sNumAveragingSlots,const PTransform& depthProjection,const Plane& basePlane); // Creates a filter for frames of the given size and the given running average length
 	~FrameFilter(void); // Destroys the frame filter
 	
 	/* Methods: */
-	void setDepthCorrection(const Kinect::FrameBuffer& newDepthCorrection); // Enables per-pixel depth correction by passing a buffer of depth correction coefficients
+	void setDepthCorrection(const Kinect::FrameSource::DepthCorrection& newDepthCorrection); // Sets the frame filter's per-pixel depth correction coefficients
 	void setValidDepthInterval(unsigned int newMinDepth,unsigned int newMaxDepth); // Sets the interval of depth values considered by the depth image filter
 	void setValidElevationInterval(const PTransform& depthProjection,const Plane& basePlane,double newMinElevation,double newMaxElevation); // Sets the interval of elevations relative to the given base plane considered by the depth image filter
 	void setStableParameters(unsigned int newMinNumSamples,unsigned int newMaxVariance); // Sets the statistical properties to consider a pixel stable

@@ -1,7 +1,7 @@
 /***********************************************************************
 RainMaker - Class to detect objects moving through a given range of
 depths in a depth image sequence to trigger rainfall on virtual terrain.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -45,7 +45,7 @@ class BlobProperty<unsigned short> // Class to calculate the 3D centroid of a bl
 		}
 	
 	/* Methods: */
-	void addPixel(int x,int y,const unsigned short& pixelValue)
+	void addPixel(unsigned int x,unsigned int y,const unsigned short& pixelValue)
 		{
 		pxs+=double(x);
 		pys+=double(y);
@@ -86,7 +86,7 @@ class BlobProperty<float> // Class to calculate the 3D centroid of a blob in dep
 		}
 	
 	/* Methods: */
-	void addPixel(int x,int y,const float& pixelValue)
+	void addPixel(unsigned int x,unsigned int y,const float& pixelValue)
 		{
 		pxs+=double(x);
 		pys+=double(y);
@@ -117,12 +117,12 @@ class ValidPixelProperty // Functor class to identify valid pixels in raw depth 
 	float minPlane[4]; // Plane equation of the lower bound of valid depth values in depth image space
 	float maxPlane[4]; // Plane equation of the upper bound of valid depth values in depth image space
 	Geometry::Matrix<float,3,4> colorDepthHomography; // Homography from 3D depth image space into 2D color image space
-	int colorSize[2]; // Width and height of color frames
+	unsigned int colorSize[2]; // Width and height of color frames
 	const unsigned char* colorFrame; // The current color frame
 	
 	/* Constructors and destructors: */
 	public:
-	ValidPixelProperty(const float sMinPlane[4],const float sMaxPlane[4],const Geometry::Matrix<float,3,4>& sColorDepthHomography,const int sColorSize[2])
+	ValidPixelProperty(const float sMinPlane[4],const float sMaxPlane[4],const Geometry::Matrix<float,3,4>& sColorDepthHomography,const unsigned int sColorSize[2])
 		:colorDepthHomography(sColorDepthHomography),
 		 colorFrame(0)
 		{
@@ -143,11 +143,11 @@ class ValidPixelProperty // Functor class to identify valid pixels in raw depth 
 		{
 		colorFrame=newColorFrame;
 		}
-	bool operator()(int x,int y,const unsigned short& pixel) const
+	bool operator()(unsigned int x,unsigned int y,const unsigned short& pixel) const
 		{
 		return operator()(x,y,float(pixel));
 		}
-	bool operator()(int x,int y,const float& pixel) const
+	bool operator()(unsigned int x,unsigned int y,const float& pixel) const
 		{
 		/* Plug the pixel into the plane equations to determine its validity: */
 		float px=float(x)+0.5f;
@@ -282,7 +282,7 @@ void* RainMaker::detectionThreadMethod(void)
 	return 0;
 	}
 
-RainMaker::RainMaker(const int sDepthSize[2],const int sColorSize[2],const RainMaker::PTransform& sDepthProjection,const RainMaker::PTransform& sColorProjection,const RainMaker::Plane& basePlane,double minElevation,double maxElevation,int sMinBlobSize)
+RainMaker::RainMaker(const unsigned int sDepthSize[2],const unsigned int sColorSize[2],const RainMaker::PTransform& sDepthProjection,const RainMaker::PTransform& sColorProjection,const RainMaker::Plane& basePlane,double minElevation,double maxElevation,int sMinBlobSize)
 	:depthIsFloat(false),
 	 outputBlobsFunction(0)
 	{
