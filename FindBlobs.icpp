@@ -1,7 +1,7 @@
 /***********************************************************************
 FindBlobs - Helper function to extract all eight-connected blobs of
 pixels from a frame that match an arbitrary property.
-Copyright (c) 2010-2012 Oliver Kreylos
+Copyright (c) 2010-2013 Oliver Kreylos
 ***********************************************************************/
 
 #define FINDBLOBS_IMPLEMENTATION
@@ -19,10 +19,10 @@ struct LineBlob // Helper structure to assemble blobs one line at a time
 	
 	/* Elements: */
 	public:
-	int x1,x2;
-	int y;
+	unsigned int x1,x2;
+	unsigned int y;
 	unsigned int parent,rank;
-	int min[2],max[2];
+	unsigned int min[2],max[2];
 	double sumX,sumY,sumW;
 	BlobProperty<Pixel> blobProperty;
 	
@@ -48,7 +48,7 @@ struct LineBlob // Helper structure to assemble blobs one line at a time
 template <class PixelParam,class PixelPropertyParam>
 inline
 std::vector<Blob<PixelParam> >
-findBlobs(const int size[2],
+findBlobs(const unsigned int size[2],
 	const PixelParam* frame,
 	const PixelPropertyParam& property)
 	{
@@ -60,10 +60,10 @@ findBlobs(const int size[2],
 	
 	/* Process all pixel rows: */
 	const PixelParam* frameRowPtr=frame;
-	for(int y=0;y<size[1];++y,frameRowPtr+=size[0])
+	for(unsigned int y=0;y<size[1];++y,frameRowPtr+=size[0])
 		{
 		/* Find all line blobs on the current line: */
-		int x=0;
+		unsigned int x=0;
 		const PixelParam* framePtr=frameRowPtr;
 		while(x<size[0])
 			{
