@@ -1,5 +1,5 @@
 ========================================================================
-README for Augmented Reality Sandbox (SARndbox) version 1.2
+README for Augmented Reality Sandbox (SARndbox) version 1.4
 Copyright (c) 2012-2013 Oliver Kreylos
 ========================================================================
 
@@ -15,9 +15,8 @@ surface using a calibrated projector.
 Requirements
 ============
 
-The Augmented Reality Sandbox version 1.2 requires Vrui version 2.7
-build 001 or newer, and the Kinect 3D Video Capture Project version 2.5
-or newer.
+The Augmented Reality Sandbox requires Vrui version 3.0 build 001 or
+newer, and the Kinect 3D Video Capture Project version 2.7 or newer.
 
 Installation Guide
 ==================
@@ -49,8 +48,8 @@ be used from multiple user accounts.
 2. Change into the Augmented Reality Sandbox's base directory:
    > cd SARndbox-<version>
 
-3. If the Vrui version installed in step 0 was not 2.7, or Vrui's
-   installation directory was changed from the default of ~/Vrui-2.7,
+3. If the Vrui version installed in step 0 was not 3.0, or Vrui's
+   installation directory was changed from the default of ~/Vrui-3.0,
    adapt the makefile using a text editor. Change the value of
    VRUI_MAKEDIR close to the beginning of the file as follows:
    VRUI_MAKEDIR := <Vrui install dir>/share/make
@@ -326,12 +325,13 @@ Start KinectViewer, and create a 3D measurement tool by assigning a
 "Mouse -> Screen Projector" tool to some button, and then a "Measurement
 Tool" tool to the same button. Then measure the 3D positions of the four
 corners of the flattened sand surface in the order lower left, lower
-right, upper right, upper left. To measure the positions correctly,
-change the view until the sand surface is aligned to the screen plane,
-i.e., until the crosshairs displayed while the viewpoint is changed
-exactly touch the virtual sand surface along its entire extent. Then
-move the mouse to the four corners of the virtual sand surface, and
-click the "Measurement Tool" tool's button once each time.
+right, upper left, upper right; in other words, form a mirrored Z
+starting in the lower left. To measure the positions correctly, change
+the view until the sand surface is aligned to the screen plane, i.e.,
+until the crosshairs displayed while the viewpoint is changed exactly
+touch the virtual sand surface along its entire extent. Then move the
+mouse to the four corners of the virtual sand surface, and click the
+"Measurement Tool" tool's button once each time.
 
 The measurement tool will save its measurements in a file in the current
 directory, with a name of MeasurementToolXXXX.dat. This file will
@@ -430,16 +430,33 @@ are in the same plane, the calibration procedure will fail.
 The exact procedure is as follows:
 
 1. Start CalibrateProjector and wait for it to collect a background
-   frame. It is essential to run CalibrateProjector in full-screen mode
-   on the projector, or the resulting calibration will be defective. See
-   the Vrui user's manual on how to force Vrui applications to run at
-   the proper position and size.
+   frame. Background capture is active while the screen is red. It is
+   essential to run CalibrateProjector in full-screen mode on the
+   projector, or the resulting calibration will be defective. See the
+   Vrui user's manual on how to force Vrui applications to run at the
+   proper position and size.
    When started, CalibrateProjector must be told the exact pixel size of
    the projector's image using the -s <width> <height> command line
    option. Using a wrong pixel size will result in a defective
-   calibration.
+   calibration. The recommended BenQ short-throw projector has 1024x768
+   pixels, which is also the default in the software. In other words,
+   when using an XGA-resolution projector, the -s option is not
+   required.
 
-2. Create a "Capture" tool.
+2. Create a "Capture" tool and bind it to two keys (here "1" and "2").
+   Press and hold "1" and move the mouse to highlight the "Capture" item
+   in the tool selection menu that pops up. Then release "1" to select
+   the highlighted item. This will open a dialog box prompting to press
+   a second key; press and release "2". This will close the dialog box.
+   Do not press "1" again when the dialog box is still open; that will
+   cancel the tool creation process.
+   This process binds functions to two keys: "1" will capture a tie
+   point, and "2" will re-capture the background sand surface. "2"
+   should only be pressed if the sand surface changes during the
+   calibration procedure, for example if a hole is dug to capture a
+   lower tie point. After any change to the sand surface, remove the
+   calibration object and any other objects, press "2", and wait for the
+   screen to turn black again.
 
 3. Place the disk target at some random elevation above or below the
    flattened average sand surface such that the intersection of the
@@ -447,15 +464,18 @@ The exact procedure is as follows:
    point.
 
 4. Remove your hands from the disk target and confirm that the target
-   is seen by the Kinect camera. CalibrateProjector will display green
-   boxes of various sizes surrounding non-background blobs in the depth
-   image. Because there is no calibration yet, the green box
-   corresponding to the disk target will not appear over the target;
-   simply ensure that there is a big green box for the disk target, and
-   that the box is stable.
+   is seen by the Kinect camera. CalibrateProjector will display all
+   non-background objects as dark green blobs, and the object it
+   identified as the calibration target as a light green blob.
+   Because there is no calibration yet, the light green blob
+   corresponding to the disk target will not be aligned with the target;
+   simply ensure that there is a light green blob, that it is circular
+   and stable, and that it corresponds with the actual calibration
+   target.
 
-5. Press the "Capture" tool's button, and wait until the tie point is
-   captured.
+5. Press the "Capture" tool's first button ("1"), and wait until the tie
+   point is captured. Do not move the calibration target or hold any
+   objects above the sand surface while a tie point is captured.
 
 6. CalibrateProjector will move on to the next tie point position, and
    display a new set of white lines. Repeat from step 3 until all tie
@@ -466,6 +486,12 @@ The exact procedure is as follows:
    continue to capture more tie points to improve calibration as
    desired; the calibration file will be updated after every additional
    tie point. Simply close the application window when satisfied.
+	 Additionally, after the first round of tie points has been collected,
+   CalibrateProjector will track the calibration target in real-time and
+   indicate its position with red crosshairs. To check calibration
+   quality, place the target anywhere in or above the sandbox, remove
+   your hands, and ensure that the red crosshairs intersect in the
+   target's center.
 
 Step 8: Run the Augmented Reality Sandbox
 -----------------------------------------
