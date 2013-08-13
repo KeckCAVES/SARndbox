@@ -10,3 +10,18 @@ SARndbox-1.1:
 SARndbox-1.2:
 - Adapted code to APIs of Vrui-2.7 and Kinect-2.5.
 - Changed types of all size variables to unsigned int.
+
+SARndbox-1.3:
+- Fixed projector calibration code.
+  - Fixed normalization of calibration homography.
+  - Fixed calculation of projected z value for z buffering.
+  - Now properly handles non-orthogonal Kinect views.
+
+SARndbox-1.4:
+- Bumped Vrui version requirement to Vrui-3.0-001.
+- Bumped Kinect version requirement to Kinect-2.7.
+- Fixed a mistake in step 5 of the installation instructions in the
+  README file; measurement points must be taken in zig-zag order, not
+  counter-clockwise. It's still wrong in the calibration video.
+- Updated instructions in README file according to new calibration
+  utility.

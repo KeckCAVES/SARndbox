@@ -308,7 +308,7 @@ WaterTable2::WaterTable2(GLsizei width,GLsizei height,const Plane& basePlane,con
 	theta=1.3f;
 	g=9.81f;
 	epsilon=0.01f*Math::max(Math::max(cellSize[0],cellSize[1]),1.0f);
-	attenuation=31.0f/32.0f;
+	attenuation=127.0f/128.0f; // 31.0f/32.0f;
 	maxStepSize=1.0f;
 	
 	/* Create a 4x4 matrix expressing the texture transformation: */
@@ -875,12 +875,14 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	glUniform1iARB(dataItem->boundaryShaderUniformLocations[0],0);
 	
 	/* Run the boundary condition shader on the outermost layer of pixels: */
+	//glColorMask(GL_TRUE,GL_FALSE,GL_FALSE,GL_FALSE);
 	glBegin(GL_LINE_LOOP);
 	glVertex2f(0.5f,0.5f);
 	glVertex2f(GLfloat(size[0])-0.5f,0.5f);
 	glVertex2f(GLfloat(size[0])-0.5f,GLfloat(size[1])-0.5f);
 	glVertex2f(0.5f,GLfloat(size[1])-0.5f);
 	glEnd();
+	//glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
 	#endif
 	
 	/* Set up the Euler integration step shader: */
@@ -896,10 +898,17 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	
 	/* Run the Euler integration step on the interior pixels: */
 	glBegin(GL_QUADS);
+	#if 0
 	glVertex2i(1,1);
 	glVertex2i(size[0]-1,1);
 	glVertex2i(size[0]-1,size[1]-1);
 	glVertex2i(1,size[1]-1);
+	#else
+	glVertex2i(0,0);
+	glVertex2i(size[0],0);
+	glVertex2i(size[0],size[1]);
+	glVertex2i(0,size[1]);
+	#endif
 	glEnd();
 	
 	/*********************************************************************
@@ -933,10 +942,17 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	
 	/* Run the Runge-Kutta integration step on the interior pixels: */
 	glBegin(GL_QUADS);
+	#if 0
 	glVertex2i(1,1);
 	glVertex2i(size[0]-1,1);
 	glVertex2i(size[0]-1,size[1]-1);
 	glVertex2i(1,size[1]-1);
+	#else
+	glVertex2i(0,0);
+	glVertex2i(size[0],0);
+	glVertex2i(size[0],size[1]);
+	glVertex2i(0,size[1]);
+	#endif
 	glEnd();
 	
 	if(waterDeposit!=0.0f||!renderFunctions.empty())

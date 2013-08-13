@@ -391,6 +391,32 @@ void Sandbox::addWater(GLContextData& contextData) const
 		
 		glPopAttrib();
 		}
+	
+	/* Remove water at the boundary: */
+	GLint viewport[4];
+	glGetIntegerv(GL_VIEWPORT,viewport);
+	glMatrixMode(GL_PROJECTION);
+	glPushMatrix();
+	glLoadIdentity();
+	glOrtho(viewport[0],viewport[0]+viewport[2],viewport[1],viewport[1]+viewport[3],-1.0,1.0);
+	glMatrixMode(GL_MODELVIEW);
+	glPushMatrix();
+	glLoadIdentity();
+	
+	glLineWidth(1.0f);
+	
+	glBegin(GL_LINE_LOOP);
+	glVertexAttrib1fARB(1,-1.0f);
+	glVertex2f(viewport[0]+0.5f,viewport[1]+0.5f);
+	glVertex2f(viewport[0]+viewport[2]-0.5f,viewport[1]+0.5f);
+	glVertex2f(viewport[0]+viewport[2]-0.5f,viewport[1]+viewport[3]-0.5f);
+	glVertex2f(viewport[0]+0.5f,viewport[1]+viewport[3]-0.5f);
+	glEnd();
+	
+	glMatrixMode(GL_PROJECTION);
+	glPopMatrix();
+	glMatrixMode(GL_MODELVIEW);
+	glPopMatrix();
 	}
 
 void Sandbox::pauseUpdatesCallback(GLMotif::ToggleButton::ValueChangedCallbackData* cbData)
@@ -760,19 +786,10 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 		try
 			{
 			IO::FilePtr transformFile=Vrui::openFile(transformFileName.c_str(),IO::File::ReadOnly);
+			transformFile->setEndianness(Misc::LittleEndian);
 			double pt[16];
 			transformFile->read(pt,16);
 			projectorTransform=PTransform::fromRowMajor(pt);
-			#if 0
-			PTransform viewport(1.0);
-			//viewport.getMatrix()(0,0)=2.0/1024.0;
-			//viewport.getMatrix()(0,3)=-1.0;
-			//viewport.getMatrix()(1,1)=2.0/768.0;
-			//viewport.getMatrix()(1,3)=-1.0;
-			viewport.getMatrix()(2,2)=2.0/30.0;
-			viewport.getMatrix()(2,3)=0.0;
-			projectorTransform.leftMultiply(viewport);
-			#endif
 			}
 		catch(std::runtime_error err)
 			{
