@@ -25,3 +25,7 @@ SARndbox-1.4:
   counter-clockwise. It's still wrong in the calibration video.
 - Updated instructions in README file according to new calibration
   utility.
+
+SARndbox-1.5:
+- Made non-target blobs yellow in CalibrateProjector to make it easier
+  to distinguish the target blob (green).
