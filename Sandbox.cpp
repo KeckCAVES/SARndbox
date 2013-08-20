@@ -1,6 +1,6 @@
 /***********************************************************************
 Sandbox - Vrui application to drive an augmented reality sandbox.
-Copyright (c) 2012-2015 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -391,6 +391,32 @@ void Sandbox::addWater(GLContextData& contextData) const
 		
 		glPopAttrib();
 		}
+	
+	/* Remove water at the boundary: */
+	GLint viewport[4];
+	glGetIntegerv(GL_VIEWPORT,viewport);
+	glMatrixMode(GL_PROJECTION);
+	glPushMatrix();
+	glLoadIdentity();
+	glOrtho(viewport[0],viewport[0]+viewport[2],viewport[1],viewport[1]+viewport[3],-1.0,1.0);
+	glMatrixMode(GL_MODELVIEW);
+	glPushMatrix();
+	glLoadIdentity();
+	
+	glLineWidth(1.0f);
+	
+	glBegin(GL_LINE_LOOP);
+	glVertexAttrib1fARB(1,-1.0f);
+	glVertex2f(viewport[0]+0.5f,viewport[1]+0.5f);
+	glVertex2f(viewport[0]+viewport[2]-0.5f,viewport[1]+0.5f);
+	glVertex2f(viewport[0]+viewport[2]-0.5f,viewport[1]+viewport[3]-0.5f);
+	glVertex2f(viewport[0]+0.5f,viewport[1]+viewport[3]-0.5f);
+	glEnd();
+	
+	glMatrixMode(GL_PROJECTION);
+	glPopMatrix();
+	glMatrixMode(GL_MODELVIEW);
+	glPopMatrix();
 	}
 
 void Sandbox::pauseUpdatesCallback(GLMotif::ToggleButton::ValueChangedCallbackData* cbData)
@@ -452,7 +478,6 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	int numAveragingSlots=30;
 	unsigned int minNumSamples=10;
 	unsigned int maxVariance=2;
-	float hysteresis=0.1f;
 	bool useContourLines=true;
 	GLfloat contourLineSpacing=0.75f;
 	unsigned int wtSize[2];
@@ -497,11 +522,6 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 				minNumSamples=atoi(argv[i]);
 				++i;
 				maxVariance=atoi(argv[i]);
-				}
-			else if(strcasecmp(argv[i]+1,"he")==0)
-				{
-				++i;
-				hysteresis=float(atof(argv[i]));
 				}
 			else if(strcasecmp(argv[i]+1,"nhm")==0)
 				{
@@ -596,9 +616,6 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 		std::cout<<"     Sets the frame filter parameters minimum number of valid samples"<<std::endl;
 		std::cout<<"     and maximum sample variance before convergence"<<std::endl;
 		std::cout<<"     Default: 10 2"<<std::endl;
-		std::cout<<"  -he <hysteresis envelope>"<<std::endl;
-		std::cout<<"     Sets the size of the hysteresis envelope used for jitter removal"<<std::endl;
-		std::cout<<"     Default: 0.1"<<std::endl;
 		std::cout<<"  -nhm"<<std::endl;
 		std::cout<<"     Disables elevation color mapping"<<std::endl;
 		std::cout<<"  -hcm <elevation color map file name>"<<std::endl;
@@ -733,7 +750,6 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	frameFilter->setDepthCorrection(*depthCorrection);
 	frameFilter->setValidElevationInterval(cameraIps.depthProjection,basePlane,elevationMin,elevationMax);
 	frameFilter->setStableParameters(minNumSamples,maxVariance);
-	frameFilter->setHysteresis(hysteresis);
 	frameFilter->setSpatialFilter(true);
 	frameFilter->setOutputFrameFunction(Misc::createFunctionCall(this,&Sandbox::receiveFilteredFrame));
 	

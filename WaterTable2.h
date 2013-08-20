@@ -2,7 +2,7 @@
 WaterTable2 - Class to simulate water flowing over a surface using
 improved water flow simulation based on Saint-Venant system of partial
 differenctial equations.
-Copyright (c) 2012-2015 Oliver Kreylos
+Copyright (c) 2012 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 

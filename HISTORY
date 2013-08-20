@@ -29,12 +29,3 @@ SARndbox-1.4:
 SARndbox-1.5:
 - Made non-target blobs yellow in CalibrateProjector to make it easier
   to distinguish the target blob (green).
-
-SARndbox-1.5-001:
-- Bumped Vrui version requirement to Vrui-3.1-001.
-- Fixed texture border mode bug that caused blue lines to run around the
-  water simulation area.
-- Fixed bug that prevented water from running out of the sandbox sides.
-- Added hysteresis option to input filter to further remove jitter in
-  the reconstructed surface. Triggered by -he <hysteresis envelope>
-  command line option.

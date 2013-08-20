@@ -1,7 +1,7 @@
 /***********************************************************************
 SurfaceRenderer - Class to render a surface defined by a regular grid in
 depth image space.
-Copyright (c) 2012-2015 Oliver Kreylos
+Copyright (c) 2012-2013 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
