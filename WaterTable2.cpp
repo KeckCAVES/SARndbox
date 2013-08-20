@@ -2,7 +2,7 @@
 WaterTable2 - Class to simulate water flowing over a surface using
 improved water flow simulation based on Saint-Venant system of partial
 differenctial equations.
-Copyright (c) 2012-2015 Oliver Kreylos
+Copyright (c) 2012 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -867,6 +867,24 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	glDrawBuffer(GL_COLOR_ATTACHMENT1_EXT);
 	glViewport(0,0,size[0],size[1]);
 	
+	#if 0
+	/* Set up the boundary condition shader to enforce dry boundaries: */
+	glUseProgramObjectARB(dataItem->boundaryShader);
+	glActiveTextureARB(GL_TEXTURE0_ARB);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[dataItem->currentBathymetry]);
+	glUniform1iARB(dataItem->boundaryShaderUniformLocations[0],0);
+	
+	/* Run the boundary condition shader on the outermost layer of pixels: */
+	//glColorMask(GL_TRUE,GL_FALSE,GL_FALSE,GL_FALSE);
+	glBegin(GL_LINE_LOOP);
+	glVertex2f(0.5f,0.5f);
+	glVertex2f(GLfloat(size[0])-0.5f,0.5f);
+	glVertex2f(GLfloat(size[0])-0.5f,GLfloat(size[1])-0.5f);
+	glVertex2f(0.5f,GLfloat(size[1])-0.5f);
+	glEnd();
+	//glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+	#endif
+	
 	/* Set up the Euler integration step shader: */
 	glUseProgramObjectARB(dataItem->eulerStepShader);
 	glUniformARB(dataItem->eulerStepShaderUniformLocations[0],stepSize);
@@ -936,22 +954,6 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	glVertex2i(0,size[1]);
 	#endif
 	glEnd();
-	
-	/* Set up the boundary condition shader to enforce dry boundaries: */
-	glUseProgramObjectARB(dataItem->boundaryShader);
-	glActiveTextureARB(GL_TEXTURE0_ARB);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[dataItem->currentBathymetry]);
-	glUniform1iARB(dataItem->boundaryShaderUniformLocations[0],0);
-	
-	/* Run the boundary condition shader on the outermost layer of pixels: */
-	//glColorMask(GL_TRUE,GL_FALSE,GL_FALSE,GL_FALSE);
-	glBegin(GL_LINE_LOOP);
-	glVertex2f(0.5f,0.5f);
-	glVertex2f(GLfloat(size[0])-0.5f,0.5f);
-	glVertex2f(GLfloat(size[0])-0.5f,GLfloat(size[1])-0.5f);
-	glVertex2f(0.5f,GLfloat(size[1])-0.5f);
-	glEnd();
-	//glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
 	
 	if(waterDeposit!=0.0f||!renderFunctions.empty())
 		{
