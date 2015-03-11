@@ -1,6 +1,6 @@
 /***********************************************************************
 Sandbox - Vrui application to drive an augmented reality sandbox.
-Copyright (c) 2012-2013 Oliver Kreylos
+Copyright (c) 2012-2015 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 

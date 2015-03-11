@@ -1,5 +1,5 @@
 ========================================================================
-README for Augmented Reality Sandbox (SARndbox) version 1.4
+README for Augmented Reality Sandbox (SARndbox) version 1.5
 Copyright (c) 2012-2013 Oliver Kreylos
 ========================================================================
 
@@ -465,13 +465,13 @@ The exact procedure is as follows:
 
 4. Remove your hands from the disk target and confirm that the target
    is seen by the Kinect camera. CalibrateProjector will display all
-   non-background objects as dark green blobs, and the object it
-   identified as the calibration target as a light green blob.
-   Because there is no calibration yet, the light green blob
-   corresponding to the disk target will not be aligned with the target;
-   simply ensure that there is a light green blob, that it is circular
-   and stable, and that it corresponds with the actual calibration
-   target.
+   non-background objects as yellow blobs, and the object it identified
+   as the calibration target as a green blob. Because there is no
+   calibration yet, the green blob corresponding to the disk target will
+   not be aligned with the target; simply ensure that there is a green
+   blob, that it is circular and stable, and that it matches the actual
+   calibration target (put your hand next to it, and see if the yellow
+   blob matching your hand appears next to the green blob).
 
 5. Press the "Capture" tool's first button ("1"), and wait until the tie
    point is captured. Do not move the calibration target or hold any
