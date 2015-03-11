@@ -443,11 +443,11 @@ void CalibrateProjector::frame(void)
 				
 				#else
 				
-				/* Make the current target block bright green and all others dark green: */
+				/* Make the current target blob green and all others yellow: */
 				if(currentBlob!=0&&*biiPtr==currentBlob->blobId)
 					*biPtr=GLColor<GLubyte,3>(0,255,0);
 				else if(*biiPtr!=~0x0U)
-					*biPtr=GLColor<GLubyte,3>(0,128,0);
+					*biPtr=GLColor<GLubyte,3>(255,255,0);
 				else
 					*biPtr=GLColor<GLubyte,3>(0,0,0);
 				
