@@ -1,6 +1,6 @@
 /***********************************************************************
 Sandbox - Vrui application to drive an augmented reality sandbox.
-Copyright (c) 2012-2013 Oliver Kreylos
+Copyright (c) 2012-2015 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -32,6 +32,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <GL/GLObject.h>
 #include <GL/GLGeometryVertex.h>
 #include <GLMotif/ToggleButton.h>
+#include <GLMotif/TextFieldSlider.h>
 #include <Vrui/Tool.h>
 #include <Vrui/GenericToolFactory.h>
 #include <Vrui/TransparentObject.h>
@@ -49,6 +50,8 @@ class FunctionCall;
 class GLContextData;
 namespace GLMotif {
 class PopupMenu;
+class PopupWindow;
+class TextField;
 }
 namespace Vrui {
 class Lightsource;
@@ -128,6 +131,7 @@ class Sandbox:public Vrui::Application,public GLObject
 		/* Elements: */
 		public:
 		GLuint heightColorMapObject; // Color map for the height map shader
+		unsigned int heightColorMapVersion; // Version number of height color map in texture object
 		GLsizei shadowBufferSize[2]; // Size of the shadow rendering frame buffer
 		GLuint shadowFramebufferObject; // Frame buffer object to render shadow maps
 		GLuint shadowDepthTextureObject; // Depth texture for the shadow rendering frame buffer
@@ -152,6 +156,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	PTransform projectorTransform; // The calibrated projector transformation matrix
 	GLMaterial surfaceMaterial; // Material properties to render the surface
 	GLColorMap heightMap; // The height color map
+	unsigned int heightMapVersion; // Version number of height map
 	Box bbox; // Bounding box around the surface
 	SurfaceRenderer* surfaceRenderer; // Renderer for the surface
 	WaterTable2* waterTable; // Water flow simulation object
@@ -170,6 +175,13 @@ class Sandbox:public Vrui::Application,public GLObject
 	SurfaceRenderer* waterRenderer; // A second surface renderer to render the water surface directly
 	Vrui::Lightsource* sun; // An external fixed light source
 	GLMotif::PopupMenu* mainMenu;
+	GLMotif::ToggleButton* pauseUpdatesToggle;
+	GLMotif::PopupWindow* waterControlDialog;
+	GLMotif::TextFieldSlider* waterSpeedSlider;
+	GLMotif::TextFieldSlider* waterMaxStepsSlider;
+	GLMotif::TextField* frameRateTextField;
+	GLMotif::TextFieldSlider* waterAttenuationSlider;
+	int controlPipeFd; // File descriptor of an optional named pipe to send control commands to a running AR Sandbox
 	
 	/* Private methods: */
 	void rawDepthFrameDispatcher(const Kinect::FrameBuffer& frameBuffer); // Callback receiving raw depth frames from the Kinect camera; forwards them to the frame filter and rain maker objects
@@ -177,16 +189,23 @@ class Sandbox:public Vrui::Application,public GLObject
 	void receiveRainObjects(const RainMaker::BlobList& newRainObjects); // Callback receiving extracted rain objects from the rain maker
 	void addWater(GLContextData& contextData) const; // Function to render geometry that adds water to the water table
 	void pauseUpdatesCallback(GLMotif::ToggleButton::ValueChangedCallbackData* cbData);
+	void showWaterControlDialogCallback(Misc::CallbackData* cbData);
+	void waterSpeedSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData);
+	void waterMaxStepsSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData);
+	void waterAttenuationSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData);
 	GLMotif::PopupMenu* createMainMenu(void);
+	GLMotif::PopupWindow* createWaterControlDialog(void);
+	bool loadHeightColorMap(const char* heightColorMapFileName); // Loads a new height color map from a file of the given name
 	
 	/* Constructors and destructors: */
 	public:
-	Sandbox(int& argc,char**& argv,char**& appDefaults);
+	Sandbox(int& argc,char**& argv);
 	virtual ~Sandbox(void);
 	
 	/* Methods from Vrui::Application: */
 	virtual void frame(void);
 	virtual void display(GLContextData& contextData) const;
+	virtual void eventCallback(EventID eventId,Vrui::InputDevice::ButtonCallbackData* cbData);
 	
 	/* Methods from GLObject: */
 	virtual void initContext(GLContextData& contextData) const;

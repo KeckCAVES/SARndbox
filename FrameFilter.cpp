@@ -2,7 +2,7 @@
 FrameFilter - Class to filter streams of depth frames arriving from a
 depth camera, with code to detect unstable values in each pixel, and
 fill holes resulting from invalid samples.
-Copyright (c) 2012-2013 Oliver Kreylos
+Copyright (c) 2012-2015 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -117,8 +117,18 @@ void* FrameFilter::filterThreadMethod(void)
 				/* Check if the pixel is considered "stable": */
 				if(sPtr[0]>=minNumSamples&&sPtr[2]*sPtr[0]<=maxVariance*sPtr[0]*sPtr[0]+sPtr[1]*sPtr[1])
 					{
-					/* Set the output pixel value to the depth-corrected running mean: */
-					*nofPtr=*ofPtr=pdcPtr->correct(float(sPtr[1])/float(sPtr[0]));
+					/* Check if the new depth-corrected running mean is outside the previous value's envelope: */
+					float newFiltered=pdcPtr->correct(float(sPtr[1])/float(sPtr[0]));
+					if(Math::abs(newFiltered-*ofPtr)>=hysteresis)
+						{
+						/* Set the output pixel value to the depth-corrected running mean: */
+						*nofPtr=*ofPtr=newFiltered;
+						}
+					else
+						{
+						/* Leave the pixel at its previous value: */
+						*nofPtr=*ofPtr;
+						}
 					}
 				else if(retainValids)
 					{
@@ -247,6 +257,7 @@ FrameFilter::FrameFilter(const unsigned int sSize[2],int sNumAveragingSlots,cons
 	/* Initialize the stability criterion: */
 	minNumSamples=(numAveragingSlots+1)/2;
 	maxVariance=4;
+	hysteresis=0.1f;
 	retainValids=true;
 	instableValue=0.0;
 	
@@ -333,6 +344,11 @@ void FrameFilter::setStableParameters(unsigned int newMinNumSamples,unsigned int
 	{
 	minNumSamples=newMinNumSamples;
 	maxVariance=newMaxVariance;
+	}
+
+void FrameFilter::setHysteresis(float newHysteresis)
+	{
+	hysteresis=newHysteresis;
 	}
 
 void FrameFilter::setRetainValids(bool newRetainValids)
