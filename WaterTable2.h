@@ -2,7 +2,7 @@
 WaterTable2 - Class to simulate water flowing over a surface using
 improved water flow simulation based on Saint-Venant system of partial
 differenctial equations.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2015 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -116,8 +116,6 @@ class WaterTable2:public GLObject
 	virtual void initContext(GLContextData& contextData) const;
 	
 	/* New methods: */
-	void setElevationRange(Scalar newMin,Scalar newMax); // Sets the range of possible elevations in the water table
-	void setMaxStepSize(GLfloat newMaxStepSize); // Sets the maximum step size for all subsequent integration steps
 	const Transform& getBaseTransform(void) const // Returns the transformation from camera space to upright elevation map space
 		{
 		return baseTransform;
@@ -126,6 +124,13 @@ class WaterTable2:public GLObject
 		{
 		return domain;
 		}
+	GLfloat getAttenuation(void) const // Returns the attenuation factor for partial discharges
+		{
+		return attenuation;
+		}
+	void setElevationRange(Scalar newMin,Scalar newMax); // Sets the range of possible elevations in the water table
+	void setAttenuation(GLfloat newAttenuation); // Sets the attenuation factor for partial discharges
+	void setMaxStepSize(GLfloat newMaxStepSize); // Sets the maximum step size for all subsequent integration steps
 	void addRenderFunction(const AddWaterFunction* newRenderFunction); // Adds a render function to the list; object remains owned by caller
 	void removeRenderFunction(const AddWaterFunction* removeRenderFunction); // Removes the given render function from the list but does not delete it
 	GLfloat getWaterDeposit(void) const // Returns the current amount of water deposited on every simulation step

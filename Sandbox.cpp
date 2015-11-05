@@ -1,6 +1,6 @@
 /***********************************************************************
 Sandbox - Vrui application to drive an augmented reality sandbox.
-Copyright (c) 2012-2013 Oliver Kreylos
+Copyright (c) 2012-2015 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -21,8 +21,13 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 #include "Sandbox.h"
 
+#include <ctype.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <string>
 #include <vector>
 #include <stdexcept>
@@ -57,8 +62,14 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <GL/GLContextData.h>
 #include <GL/GLGeometryWrappers.h>
 #include <GL/GLTransformationWrappers.h>
+#include <GLMotif/StyleSheet.h>
+#include <GLMotif/WidgetManager.h>
 #include <GLMotif/PopupMenu.h>
 #include <GLMotif/Menu.h>
+#include <GLMotif/PopupWindow.h>
+#include <GLMotif/Margin.h>
+#include <GLMotif/Label.h>
+#include <GLMotif/TextField.h>
 #include <Vrui/Vrui.h>
 #include <Vrui/Lightsource.h>
 #include <Vrui/LightsourceManager.h>
@@ -293,7 +304,7 @@ Methods of class Sandbox::DataItem:
 **********************************/
 
 Sandbox::DataItem::DataItem(void)
-	:heightColorMapObject(0),
+	:heightColorMapObject(0),heightColorMapVersion(0),
 	 shadowFramebufferObject(0),shadowDepthTextureObject(0)
 	{
 	/* Check if all required extensions are supported: */
@@ -376,7 +387,7 @@ void Sandbox::addWater(GLContextData& contextData) const
 		x.normalize();
 		y.normalize();
 		
-		glVertexAttrib1fARB(1,rainStrength);
+		glVertexAttrib1fARB(1,rainStrength/waterSpeed);
 		for(RainMaker::BlobList::const_iterator roIt=rainObjects.getLockedValue().begin();roIt!=rainObjects.getLockedValue().end();++roIt)
 			{
 			/* Render the rain object: */
@@ -391,37 +402,31 @@ void Sandbox::addWater(GLContextData& contextData) const
 		
 		glPopAttrib();
 		}
-	
-	/* Remove water at the boundary: */
-	GLint viewport[4];
-	glGetIntegerv(GL_VIEWPORT,viewport);
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-	glOrtho(viewport[0],viewport[0]+viewport[2],viewport[1],viewport[1]+viewport[3],-1.0,1.0);
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadIdentity();
-	
-	glLineWidth(1.0f);
-	
-	glBegin(GL_LINE_LOOP);
-	glVertexAttrib1fARB(1,-1.0f);
-	glVertex2f(viewport[0]+0.5f,viewport[1]+0.5f);
-	glVertex2f(viewport[0]+viewport[2]-0.5f,viewport[1]+0.5f);
-	glVertex2f(viewport[0]+viewport[2]-0.5f,viewport[1]+viewport[3]-0.5f);
-	glVertex2f(viewport[0]+0.5f,viewport[1]+viewport[3]-0.5f);
-	glEnd();
-	
-	glMatrixMode(GL_PROJECTION);
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
 	}
 
 void Sandbox::pauseUpdatesCallback(GLMotif::ToggleButton::ValueChangedCallbackData* cbData)
 	{
 	pauseUpdates=cbData->set;
+	}
+
+void Sandbox::showWaterControlDialogCallback(Misc::CallbackData* cbData)
+	{
+	Vrui::popupPrimaryWidget(waterControlDialog);
+	}
+
+void Sandbox::waterSpeedSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData)
+	{
+	waterSpeed=cbData->value;
+	}
+
+void Sandbox::waterMaxStepsSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData)
+	{
+	waterMaxSteps=int(Math::floor(cbData->value+0.5));
+	}
+
+void Sandbox::waterAttenuationSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData)
+	{
+	waterTable->setAttenuation(GLfloat(1.0-cbData->value));
 	}
 
 GLMotif::PopupMenu* Sandbox::createMainMenu(void)
@@ -434,9 +439,16 @@ GLMotif::PopupMenu* Sandbox::createMainMenu(void)
 	GLMotif::Menu* mainMenu=new GLMotif::Menu("MainMenu",mainMenuPopup,false);
 	
 	/* Create a button to pause topography updates: */
-	GLMotif::ToggleButton* pauseUpdatesButton=new GLMotif::ToggleButton("PauseUpdatesButton",mainMenu,"Pause Topography");
-	pauseUpdatesButton->setToggle(false);
-	pauseUpdatesButton->getValueChangedCallbacks().add(this,&Sandbox::pauseUpdatesCallback);
+	pauseUpdatesToggle=new GLMotif::ToggleButton("PauseUpdatesToggle",mainMenu,"Pause Topography");
+	pauseUpdatesToggle->setToggle(false);
+	pauseUpdatesToggle->getValueChangedCallbacks().add(this,&Sandbox::pauseUpdatesCallback);
+	
+	if(waterTable!=0)
+		{
+		/* Create a button to show the water control dialog: */
+		GLMotif::Button* showWaterControlDialogButton=new GLMotif::Button("ShowWaterControlDialogButton",mainMenu,"Show Water Simulation Control");
+		showWaterControlDialogButton->getSelectCallbacks().add(this,&Sandbox::showWaterControlDialogCallback);
+		}
 	
 	/* Finish building the main menu: */
 	mainMenu->manageChild();
@@ -444,22 +456,148 @@ GLMotif::PopupMenu* Sandbox::createMainMenu(void)
 	return mainMenuPopup;
 	}
 
-Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
-	:Vrui::Application(argc,argv,appDefaults),
+GLMotif::PopupWindow* Sandbox::createWaterControlDialog(void)
+	{
+	const GLMotif::StyleSheet& ss=*Vrui::getWidgetManager()->getStyleSheet();
+	
+	/* Create a popup window shell: */
+	GLMotif::PopupWindow* waterControlDialogPopup=new GLMotif::PopupWindow("WaterControlDialogPopup",Vrui::getWidgetManager(),"Water Simulation Control");
+	waterControlDialogPopup->setCloseButton(true);
+	waterControlDialogPopup->setResizableFlags(true,false);
+	waterControlDialogPopup->popDownOnClose();
+	
+	GLMotif::RowColumn* waterControlDialog=new GLMotif::RowColumn("WaterControlDialog",waterControlDialogPopup,false);
+	waterControlDialog->setOrientation(GLMotif::RowColumn::VERTICAL);
+	waterControlDialog->setPacking(GLMotif::RowColumn::PACK_TIGHT);
+	waterControlDialog->setNumMinorWidgets(2);
+	
+	new GLMotif::Label("WaterSpeedLabel",waterControlDialog,"Speed");
+	
+	waterSpeedSlider=new GLMotif::TextFieldSlider("WaterSpeedSlider",waterControlDialog,8,ss.fontHeight*10.0f);
+	waterSpeedSlider->getTextField()->setFieldWidth(7);
+	waterSpeedSlider->getTextField()->setPrecision(4);
+	waterSpeedSlider->getTextField()->setFloatFormat(GLMotif::TextField::SMART);
+	waterSpeedSlider->setSliderMapping(GLMotif::TextFieldSlider::EXP10);
+	waterSpeedSlider->setValueRange(0.001,10.0,0.05);
+	waterSpeedSlider->getSlider()->addNotch(0.0f);
+	waterSpeedSlider->setValue(waterSpeed);
+	waterSpeedSlider->getValueChangedCallbacks().add(this,&Sandbox::waterSpeedSliderCallback);
+	
+	new GLMotif::Label("WaterMaxStepsLabel",waterControlDialog,"Max Steps");
+	
+	waterMaxStepsSlider=new GLMotif::TextFieldSlider("WaterMaxStepsSlider",waterControlDialog,8,ss.fontHeight*10.0f);
+	waterMaxStepsSlider->getTextField()->setFieldWidth(7);
+	waterMaxStepsSlider->getTextField()->setPrecision(0);
+	waterMaxStepsSlider->getTextField()->setFloatFormat(GLMotif::TextField::FIXED);
+	waterMaxStepsSlider->setSliderMapping(GLMotif::TextFieldSlider::LINEAR);
+	waterMaxStepsSlider->setValueType(GLMotif::TextFieldSlider::UINT);
+	waterMaxStepsSlider->setValueRange(0,200,1);
+	waterMaxStepsSlider->setValue(waterMaxSteps);
+	waterMaxStepsSlider->getValueChangedCallbacks().add(this,&Sandbox::waterMaxStepsSliderCallback);
+	
+	new GLMotif::Label("FrameRateLabel",waterControlDialog,"Frame Rate");
+	
+	GLMotif::Margin* frameRateMargin=new GLMotif::Margin("FrameRateMargin",waterControlDialog,false);
+	frameRateMargin->setAlignment(GLMotif::Alignment::LEFT);
+	
+	frameRateTextField=new GLMotif::TextField("FrameRateTextField",frameRateMargin,8);
+	frameRateTextField->setFieldWidth(7);
+	frameRateTextField->setPrecision(2);
+	frameRateTextField->setFloatFormat(GLMotif::TextField::FIXED);
+	frameRateTextField->setValue(0.0);
+	
+	frameRateMargin->manageChild();
+	
+	new GLMotif::Label("WaterAttenuationLabel",waterControlDialog,"Attenuation");
+	
+	waterAttenuationSlider=new GLMotif::TextFieldSlider("WaterAttenuationSlider",waterControlDialog,8,ss.fontHeight*10.0f);
+	waterAttenuationSlider->getTextField()->setFieldWidth(7);
+	waterAttenuationSlider->getTextField()->setPrecision(5);
+	waterAttenuationSlider->getTextField()->setFloatFormat(GLMotif::TextField::SMART);
+	waterAttenuationSlider->setSliderMapping(GLMotif::TextFieldSlider::EXP10);
+	waterAttenuationSlider->setValueRange(0.001,1.0,0.01);
+	waterAttenuationSlider->getSlider()->addNotch(Math::log10(1.0-double(waterTable->getAttenuation())));
+	waterAttenuationSlider->setValue(1.0-double(waterTable->getAttenuation()));
+	waterAttenuationSlider->getValueChangedCallbacks().add(this,&Sandbox::waterAttenuationSliderCallback);
+	
+	waterControlDialog->manageChild();
+	
+	return waterControlDialogPopup;
+	}
+
+bool Sandbox::loadHeightColorMap(const char* heightColorMapFileName)
+	{
+	std::vector<GLColorMap::Color> heightMapColors;
+	std::vector<GLdouble> heightMapKeys;
+	IO::ValueSource heightMapSource(Vrui::openFile(heightColorMapFileName));
+	if(Misc::hasCaseExtension(heightColorMapFileName,".cpt"))
+		{
+		heightMapSource.setPunctuation("\n");
+		heightMapSource.skipWs();
+		while(!heightMapSource.eof())
+			{
+			/* Read the next color map key value: */
+			heightMapKeys.push_back(GLdouble(heightMapSource.readNumber()));
+			
+			/* Read the next color map color value: */
+			GLColorMap::Color color;
+			for(int i=0;i<3;++i)
+				color[i]=GLColorMap::Color::Scalar(heightMapSource.readNumber()/255.0);
+			color[3]=GLColorMap::Color::Scalar(1);
+			heightMapColors.push_back(color);
+			if(!heightMapSource.isLiteral('\n'))
+				return false;
+			}
+		}
+	else
+		{
+		heightMapSource.setPunctuation(",\n");
+		heightMapSource.skipWs();
+		while(!heightMapSource.eof())
+			{
+			/* Read the next color map key value: */
+			heightMapKeys.push_back(GLdouble(heightMapSource.readNumber()));
+			if(!heightMapSource.isLiteral(','))
+				return false;
+			
+			/* Read the next color map color value: */
+			GLColorMap::Color color;
+			for(int i=0;i<3;++i)
+				color[i]=GLColorMap::Color::Scalar(heightMapSource.readNumber());
+			color[3]=GLColorMap::Color::Scalar(1);
+			heightMapColors.push_back(color);
+			if(!heightMapSource.isLiteral('\n'))
+				return false;
+			}
+		}
+	
+	/* Update the height color map: */
+	heightMap=GLColorMap(heightMapKeys.size(),&heightMapColors[0],&heightMapKeys[0]);
+	++heightMapVersion;
+	
+	return true;
+	}
+
+Sandbox::Sandbox(int& argc,char**& argv)
+	:Vrui::Application(argc,argv),
 	 camera(0),
 	 frameFilter(0),pauseUpdates(false),
 	 surfaceMaterial(GLMaterial::Color(0.8f,0.8f,0.8f),GLMaterial::Color(1.0f,1.0f,1.0f),25.0f),
+	 heightMapVersion(0),
 	 surfaceRenderer(0),
 	 waterTable(0),waterSpeed(1.0),waterMaxSteps(30),rainStrength(0.25f),
 	 rmFrameFilter(0),rainMaker(0),addWaterFunction(0),addWaterFunctionRegistered(false),
 	 fixProjectorView(false),hillshade(false),useShadows(false),useHeightMap(false),
 	 waterRenderer(0),
 	 sun(0),
-	 mainMenu(0)
+	 mainMenu(0),pauseUpdatesToggle(0),waterControlDialog(0),
+	 waterSpeedSlider(0),waterMaxStepsSlider(0),frameRateTextField(0),waterAttenuationSlider(0),
+	 controlPipeFd(-1)
 	{
 	/* Initialize the custom tool classes: */
 	WaterTool::initClass(*Vrui::getToolManager());
 	LocalWaterTool::initClass(*Vrui::getToolManager());
+	addEventTool("Pause Topography",0,0);
 	
 	/* Process command line parameters: */
 	bool printHelp=false;
@@ -478,6 +616,7 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	int numAveragingSlots=30;
 	unsigned int minNumSamples=10;
 	unsigned int maxVariance=2;
+	float hysteresis=0.1f;
 	bool useContourLines=true;
 	GLfloat contourLineSpacing=0.75f;
 	unsigned int wtSize[2];
@@ -488,6 +627,7 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	double rainElevationMin=-1000.0;
 	double rainElevationMax=1000.0;
 	double evaporationRate=0.0;
+	const char* controlPipeName=0;
 	for(int i=1;i<argc;++i)
 		{
 		if(argv[i][0]=='-')
@@ -522,6 +662,11 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 				minNumSamples=atoi(argv[i]);
 				++i;
 				maxVariance=atoi(argv[i]);
+				}
+			else if(strcasecmp(argv[i]+1,"he")==0)
+				{
+				++i;
+				hysteresis=float(atof(argv[i]));
 				}
 			else if(strcasecmp(argv[i]+1,"nhm")==0)
 				{
@@ -588,6 +733,11 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 				useHeightMap=true;
 			else if(strcasecmp(argv[i]+1,"rws")==0)
 				renderWaterSurface=true;
+			else if(strcasecmp(argv[i]+1,"cp")==0)
+				{
+				++i;
+				controlPipeName=argv[i];
+				}
 			}
 		}
 	
@@ -616,6 +766,9 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 		std::cout<<"     Sets the frame filter parameters minimum number of valid samples"<<std::endl;
 		std::cout<<"     and maximum sample variance before convergence"<<std::endl;
 		std::cout<<"     Default: 10 2"<<std::endl;
+		std::cout<<"  -he <hysteresis envelope>"<<std::endl;
+		std::cout<<"     Sets the size of the hysteresis envelope used for jitter removal"<<std::endl;
+		std::cout<<"     Default: 0.1"<<std::endl;
 		std::cout<<"  -nhm"<<std::endl;
 		std::cout<<"     Disables elevation color mapping"<<std::endl;
 		std::cout<<"  -hcm <elevation color map file name>"<<std::endl;
@@ -658,6 +811,8 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 		std::cout<<"     Enables elevation color mapping"<<std::endl;
 		std::cout<<"  -rws"<<std::endl;
 		std::cout<<"     Renders water surface as geometric surface"<<std::endl;
+		std::cout<<"  -cp <control pipe name>"<<std::endl;
+		std::cout<<"     Sets the name of a named POSIX pipe from which to read control commands"<<std::endl;
 		}
 	
 	/* Enable background USB event handling: */
@@ -694,50 +849,8 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	}
 	
 	/* Load the height color map: */
-	std::vector<GLColorMap::Color> heightMapColors;
-	std::vector<GLdouble> heightMapKeys;
-	IO::ValueSource heightMapSource(Vrui::openFile(heightColorMapFileName.c_str()));
-	if(Misc::hasCaseExtension(heightColorMapFileName.c_str(),".cpt"))
-		{
-		heightMapSource.setPunctuation("\n");
-		heightMapSource.skipWs();
-		while(!heightMapSource.eof())
-			{
-			/* Read the next color map key value: */
-			heightMapKeys.push_back(GLdouble(heightMapSource.readNumber()));
-			
-			/* Read the next color map color value: */
-			GLColorMap::Color color;
-			for(int i=0;i<3;++i)
-				color[i]=GLColorMap::Color::Scalar(heightMapSource.readNumber()/255.0);
-			color[3]=GLColorMap::Color::Scalar(1);
-			heightMapColors.push_back(color);
-			if(!heightMapSource.isLiteral('\n'))
-				Misc::throwStdErr("Sandbox::Sandbox: Format error in color map file %s",heightColorMapFileName.c_str());
-			}
-		}
-	else
-		{
-		heightMapSource.setPunctuation(",\n");
-		heightMapSource.skipWs();
-		while(!heightMapSource.eof())
-			{
-			/* Read the next color map key value: */
-			heightMapKeys.push_back(GLdouble(heightMapSource.readNumber()));
-			if(!heightMapSource.isLiteral(','))
-				Misc::throwStdErr("Sandbox::Sandbox: Format error in color map file %s",heightColorMapFileName.c_str());
-			
-			/* Read the next color map color value: */
-			GLColorMap::Color color;
-			for(int i=0;i<3;++i)
-				color[i]=GLColorMap::Color::Scalar(heightMapSource.readNumber());
-			color[3]=GLColorMap::Color::Scalar(1);
-			heightMapColors.push_back(color);
-			if(!heightMapSource.isLiteral('\n'))
-				Misc::throwStdErr("Sandbox::Sandbox: Format error in color map file %s",heightColorMapFileName.c_str());
-			}
-		}
-	heightMap=GLColorMap(heightMapKeys.size(),&heightMapColors[0],&heightMapKeys[0]);
+	if(!loadHeightColorMap(heightColorMapFileName.c_str()))
+		Misc::throwStdErr("Sandbox::Sandbox: Format error in height color map %s",heightColorMapFileName.c_str());
 	
 	/* Limit the valid elevation range to the extent of the height color map: */
 	if(elevationMin<heightMap.getScalarRangeMin())
@@ -750,6 +863,7 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	frameFilter->setDepthCorrection(*depthCorrection);
 	frameFilter->setValidElevationInterval(cameraIps.depthProjection,basePlane,elevationMin,elevationMax);
 	frameFilter->setStableParameters(minNumSamples,maxVariance);
+	frameFilter->setHysteresis(hysteresis);
 	frameFilter->setSpatialFilter(true);
 	frameFilter->setOutputFrameFunction(Misc::createFunctionCall(this,&Sandbox::receiveFilteredFrame));
 	
@@ -860,9 +974,19 @@ Sandbox::Sandbox(int& argc,char**& argv,char**& appDefaults)
 	sun->getLight().position=GLLight::Position(1,0,1,0);
 	#endif
 	
-	/* Create the main menu: */
+	/* Create the GUI: */
 	mainMenu=createMainMenu();
 	Vrui::setMainMenu(mainMenu);
+	if(waterTable!=0)
+		waterControlDialog=createWaterControlDialog();
+	
+	if(controlPipeName!=0)
+		{
+		/* Open the control pipe in non-blocking mode: */
+		controlPipeFd=open(controlPipeName,O_RDONLY|O_NONBLOCK);
+		if(controlPipeFd<0)
+			std::cerr<<"Unable to open control pipe "<<controlPipeName<<"; ignoring"<<std::endl;
+		}
 	
 	/* Initialize the navigation transformation: */
 	Vrui::Point::AffineCombiner cc;
@@ -895,6 +1019,9 @@ Sandbox::~Sandbox(void)
 	delete waterRenderer;
 	
 	delete mainMenu;
+	delete waterControlDialog;
+	
+	close(controlPipeFd);
 	}
 
 void Sandbox::frame(void)
@@ -923,6 +1050,77 @@ void Sandbox::frame(void)
 	/* Update the surface renderer: */
 	surfaceRenderer->setAnimationTime(Vrui::getApplicationTime());
 	
+	/* Check if there is a control command on the control pipe: */
+	if(controlPipeFd>=0)
+		{
+		/* Try reading a chunk of data (will fail with EAGAIN if no data due to non-blocking access): */
+		char command[1024];
+		ssize_t readResult=read(controlPipeFd,command,sizeof(command)-1);
+		if(readResult>0)
+			{
+			command[readResult]='\0';
+			
+			/* Extract the command: */
+			char* cPtr;
+			for(cPtr=command;*cPtr!='\0'&&!isspace(*cPtr);++cPtr)
+				;
+			char* commandEnd=cPtr;
+			
+			/* Find the beginning of an optional command parameter: */
+			while(*cPtr!='\0'&&isspace(*cPtr))
+				++cPtr;
+			char* parameter=cPtr;
+			
+			/* Find the end of the optional parameter list: */
+			while(*cPtr!='\0')
+				++cPtr;
+			while(cPtr>parameter&&isspace(cPtr[-1]))
+				--cPtr;
+			*cPtr='\0';
+			
+			/* Parse the command: */
+			*commandEnd='\0';
+			if(strcasecmp(command,"waterSpeed")==0)
+				{
+				waterSpeed=atof(parameter);
+				if(waterSpeedSlider!=0)
+					waterSpeedSlider->setValue(waterSpeed);
+				}
+			else if(strcasecmp(command,"waterMaxSteps")==0)
+				{
+				waterMaxSteps=atoi(parameter);
+				if(waterMaxStepsSlider!=0)
+					waterMaxStepsSlider->setValue(waterMaxSteps);
+				}
+			else if(strcasecmp(command,"waterAttenuation")==0)
+				{
+				double attenuation=atof(parameter);
+				if(waterTable!=0)
+					waterTable->setAttenuation(GLfloat(1.0-attenuation));
+				if(waterAttenuationSlider!=0)
+					waterAttenuationSlider->setValue(attenuation);
+				}
+			else if(strcasecmp(command,"colorMap")==0)
+				{
+				try
+					{
+					if(!loadHeightColorMap(parameter))
+						std::cerr<<"Format error in height color map "<<parameter<<std::endl;
+					}
+				catch(std::runtime_error err)
+					{
+					std::cerr<<"Cannot read height color map "<<parameter<<" due to exception "<<err.what()<<std::endl;
+					}
+				}
+			}
+		}
+	
+	if(frameRateTextField!=0&&Vrui::getWidgetManager()->isVisible(waterControlDialog))
+		{
+		/* Update the frame rate display: */
+		frameRateTextField->setValue(1.0/Vrui::getCurrentFrameTime());
+		}
+	
 	if(pauseUpdates)
 		Vrui::scheduleUpdate(Vrui::getApplicationTime()+1.0/30.0);
 	}
@@ -942,6 +1140,7 @@ void Sandbox::display(GLContextData& contextData) const
 		unsigned int numSteps=0;
 		while(numSteps<waterMaxSteps&&totalTimeStep>1.0e-8f)
 			{
+			/* Run with a self-determined time step to maintain stability: */
 			waterTable->setMaxStepSize(totalTimeStep);
 			GLfloat timeStep=waterTable->runSimulationStep(contextData);
 			totalTimeStep-=timeStep;
@@ -959,6 +1158,20 @@ void Sandbox::display(GLContextData& contextData) const
 		glLoadMatrix(projectorTransform);
 		glMultMatrix(Geometry::invert(Vrui::getDisplayState(contextData).modelviewNavigational));
 		glMatrixMode(GL_MODELVIEW);
+		}
+	
+	/* Check if the height color map texture is outdated: */
+	if(dataItem->heightColorMapVersion!=heightMapVersion)
+		{
+		/* Upload the height color map as a 1D texture: */
+		glBindTexture(GL_TEXTURE_1D,dataItem->heightColorMapObject);
+		glTexParameteri(GL_TEXTURE_1D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_1D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_1D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+		glTexImage1D(GL_TEXTURE_1D,0,GL_RGB8,heightMap.getNumEntries(),0,GL_RGBA,GL_FLOAT,heightMap.getColors());
+		glBindTexture(GL_TEXTURE_1D,0);
+		
+		dataItem->heightColorMapVersion=heightMapVersion;
 		}
 	
 	if(hillshade)
@@ -1160,20 +1373,32 @@ void Sandbox::display(GLContextData& contextData) const
 		}
 	}
 
+void Sandbox::eventCallback(Vrui::Application::EventID eventId,Vrui::InputDevice::ButtonCallbackData* cbData)
+	{
+	if(cbData->newButtonState)
+		{
+		switch(eventId)
+			{
+			case 0:
+				/* Invert the current pause setting: */
+				pauseUpdates=!pauseUpdates;
+				
+				/* Update the main menu toggle: */
+				pauseUpdatesToggle->setToggle(pauseUpdates);
+				
+				break;
+			}
+		}
+	}
+
 void Sandbox::initContext(GLContextData& contextData) const
 	{
 	/* Create a data item and add it to the context: */
 	DataItem* dataItem=new DataItem;
 	contextData.addDataItem(this,dataItem);
 	
-	/* Upload the height color map as a 1D texture: */
+	/* Create the height color map texture object: */
 	glGenTextures(1,&dataItem->heightColorMapObject);
-	glBindTexture(GL_TEXTURE_1D,dataItem->heightColorMapObject);
-	glTexParameteri(GL_TEXTURE_1D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_1D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_1D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
-	glTexImage1D(GL_TEXTURE_1D,0,GL_RGB8,heightMap.getNumEntries(),0,GL_RGBA,GL_FLOAT,heightMap.getColors());
-	glBindTexture(GL_TEXTURE_1D,0);
 	
 	{
 	/* Save the currently bound frame buffer: */
@@ -1209,23 +1434,4 @@ void Sandbox::initContext(GLContextData& contextData) const
 	} 
 	}
 
-/*************
-Main function:
-*************/
-
-int main(int argc,char* argv[])
-	{
-	try
-		{
-		char** appDefault=0;
-		Sandbox app(argc,argv,appDefault);
-		app.run();
-		}
-	catch(std::runtime_error err)
-		{
-		std::cerr<<"Caught exception "<<err.what()<<std::endl;
-		return 1;
-		}
-	
-	return 0;
-	}
+VRUI_APPLICATION_RUN(Sandbox)
