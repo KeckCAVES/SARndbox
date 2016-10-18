@@ -1,6 +1,6 @@
 /***********************************************************************
 SurfaceDepthShader - Shader to render a surface's depth only.
-Copyright (c) 2012 Oliver Kreylos
+Copyright (c) 2012-2014 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -19,7 +19,17 @@ with the Augmented Reality Sandbox; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 ***********************************************************************/
 
+#extension GL_ARB_texture_rectangle : enable
+
+uniform sampler2DRect depthSampler; // Sampler for the depth image-space elevation texture
+uniform mat4 projectionModelviewDepthProjection; // Combined transformation from depth image space to clip space
+
 void main()
 	{
-	/* Do nothing; depth is written automatically */
+	/* Get the vertex' depth image-space z coordinate from the texture: */
+	vec4 vertexDic=gl_Vertex;
+	vertexDic.z=texture2DRect(depthSampler,vertexDic.xy).r;
+	
+	/* Transform vertex directly from depth image space to clip space: */
+	gl_Position=projectionModelviewDepthProjection*vertexDic;
 	}

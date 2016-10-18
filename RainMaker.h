@@ -1,7 +1,7 @@
 /***********************************************************************
 RainMaker - Class to detect objects moving through a given range of
 depths in a depth image sequence to trigger rainfall on virtual terrain.
-Copyright (c) 2012-2013 Oliver Kreylos
+Copyright (c) 2012-2015 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 

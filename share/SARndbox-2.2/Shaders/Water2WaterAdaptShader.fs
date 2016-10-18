@@ -1,7 +1,7 @@
 /***********************************************************************
-SurfaceElevationShader - Shader to render the elevation of a surface
-relative to a plane.
-Copyright (c) 2012 Oliver Kreylos
+Water2WaterAdaptShader - Shader to adjust the water surface height to
+the current bathymetry.
+Copyright (c) 2014 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -22,24 +22,20 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 #extension GL_ARB_texture_rectangle : enable
 
-uniform sampler2DRect depthSampler; // Sampler for the depth image-space elevation texture
-uniform mat4 depthProjection; // Transformation from depth image space to camera space
-uniform vec4 basePlane; // Plane equation of the base plane
-
-varying float elevation; // Elevation relative to base plane
+uniform sampler2DRect bathymetrySampler;
+uniform sampler2DRect newQuantitySampler;
 
 void main()
 	{
-	/* Get the vertex' depth image-space z coordinate from the texture: */
-	vec4 vertexDic=gl_Vertex;
-	vertexDic.z=texture2DRect(depthSampler,vertexDic.xy).r;
+	/* Calculate the old and new bathymetry elevations at the center of this cell: */
+	float b=(texture2DRect(bathymetrySampler,vec2(gl_FragCoord.x-1.0,gl_FragCoord.y-1.0)).r+
+	         texture2DRect(bathymetrySampler,vec2(gl_FragCoord.x,gl_FragCoord.y-1.0)).r+
+	         texture2DRect(bathymetrySampler,vec2(gl_FragCoord.x-1.0,gl_FragCoord.y)).r+
+	         texture2DRect(bathymetrySampler,vec2(gl_FragCoord.xy)).r)*0.25;
 	
-	/* Transform the vertex from depth image space to camera space: */
-	vec4 vertexCc=depthProjection*vertexDic;
+	/* Get the new quantity at the cell center: */
+	vec3 qNew=texture2DRect(newQuantitySampler,gl_FragCoord.xy).rgb;
 	
-	/* Plug camera-space vertex into the base plane equation: */
-	elevation=dot(basePlane,vertexCc)/vertexCc.w;
-	
-	/* Transform vertex to clip coordinates: */
-	gl_Position=gl_ModelViewProjectionMatrix*vertexCc;
+	/* Adjust the water surface height: */
+	gl_FragColor=vec4(max(qNew.x,b),qNew.yz,0.0);
 	}

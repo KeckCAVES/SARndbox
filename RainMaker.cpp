@@ -1,7 +1,7 @@
 /***********************************************************************
 RainMaker - Class to detect objects moving through a given range of
 depths in a depth image sequence to trigger rainfall on virtual terrain.
-Copyright (c) 2012-2013 Oliver Kreylos
+Copyright (c) 2012-2015 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -207,7 +207,7 @@ inline
 void RainMaker::extractBlobs(const Kinect::FrameBuffer& depthFrame,const ValidPixelProperty& vpp,RainMaker::BlobList& blobsCc)
 	{
 	/* Extract raw blobs from the depth frame: */
-	std::vector< ::Blob<DepthPixelParam> > blobsDic=findBlobs(depthSize,static_cast<const DepthPixelParam*>(depthFrame.getBuffer()),vpp);
+	std::vector< ::Blob<DepthPixelParam> > blobsDic=findBlobs(depthSize,depthFrame.getData<DepthPixelParam>(),vpp);
 	
 	/* Transform all blobs larger than the threshold to camera space: */
 	blobsCc.reserve(blobsDic.size());
@@ -265,7 +265,7 @@ void* RainMaker::detectionThreadMethod(void)
 		if(outputBlobsFunction!=0)
 			{
 			/* Set the most recent color frame in the pixel validator: */
-			vpp.setColorFrame(static_cast<const unsigned char*>(colorFrame.getBuffer()));
+			vpp.setColorFrame(colorFrame.getData<unsigned char>());
 			
 			/* Detect all objects in the depth frame between the min and max planes: */
 			BlobList blobsCc;

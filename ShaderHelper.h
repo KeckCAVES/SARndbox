@@ -1,6 +1,6 @@
 /***********************************************************************
-SurfaceDepthShader - Shader to render a surface's depth only.
-Copyright (c) 2012 Oliver Kreylos
+ShaderHelper - Helper functions to create GLSL shaders from text files.
+Copyright (c) 2014 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -19,17 +19,14 @@ with the Augmented Reality Sandbox; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 ***********************************************************************/
 
-#extension GL_ARB_texture_rectangle : enable
+#ifndef SHADERHELPER_INCLUDED
+#define SHADERHELPER_INCLUDED
 
-uniform sampler2DRect depthSampler; // Sampler for the depth image-space elevation texture
-uniform mat4 projectionModelviewDepthProjection; // Combined transformation from depth image space to clip space
+#include <GL/gl.h>
+#include <GL/Extensions/GLARBShaderObjects.h>
 
-void main()
-	{
-	/* Get the vertex' depth image-space z coordinate from the texture: */
-	vec4 vertexDic=gl_Vertex;
-	vertexDic.z=texture2DRect(depthSampler,vertexDic.xy).r;
-	
-	/* Transform vertex directly from depth image space to clip space: */
-	gl_Position=projectionModelviewDepthProjection*vertexDic;
-	}
+GLhandleARB compileVertexShader(const char* vertexShaderFileName); // Returns a handle to a vertex shader compiled from the given source file in the SARndbox's shader directory
+GLhandleARB compileFragmentShader(const char* fragmentShaderFileName); // Returns a handle to a fragment shader compiled from the given source file in the SARndbox's shader directory
+GLhandleARB linkVertexAndFragmentShader(const char* shaderFileName); // Returns a handle to a shader program linked from a vertex shader and a fragment shader compiled from the given source files in the SARndbox's shader directory
+
+#endif
