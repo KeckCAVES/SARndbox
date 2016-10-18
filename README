@@ -1,6 +1,6 @@
 ========================================================================
-README for Augmented Reality Sandbox (SARndbox) version 1.6
-Copyright (c) 2012-2015 Oliver Kreylos
+README for Augmented Reality Sandbox (SARndbox) version 2.2
+Copyright (c) 2012-2016 Oliver Kreylos
 ========================================================================
 
 Overview
@@ -15,8 +15,8 @@ surface using a calibrated projector.
 Requirements
 ============
 
-The Augmented Reality Sandbox requires Vrui version 3.1 build 004 or
-newer, and the Kinect 3D Video Capture Project version 2.8 or newer.
+The Augmented Reality Sandbox requires Vrui version 4.2 build 001 or
+newer, and the Kinect 3D Video Capture Project version 3.2 or newer.
 
 Installation Guide
 ==================
@@ -25,12 +25,6 @@ It is recommended to download or move the source packages for Vrui, the
 Kinect 3D Video Capture Project, and the Augmented Reality Sandbox into
 a src directory underneath the user's home directory. Otherwise,
 references to ~/src in the following instructions need to be changed.
-
-It is also recommended to skip optional steps 4 and 6 in the following
-instructions. The Augmented Reality Sandbox does not need to be
-installed in order to be used; installation (to a system directory such
-as /usr/local) is only recommended if the Augmented Reality Sandbox will
-be used from multiple user accounts.
 
 0. Install Vrui from ~/src/Vrui-<version>-<build> (see Vrui README file).
 
@@ -48,8 +42,8 @@ be used from multiple user accounts.
 2. Change into the Augmented Reality Sandbox's base directory:
    > cd SARndbox-<version>
 
-3. If the Vrui version installed in step 0 was not 3.1, or Vrui's
-   installation directory was changed from the default of ~/Vrui-3.1,
+3. If the Vrui version installed in step 0 was not 4.2, or Vrui's
+   installation directory was changed from the default of /usr/local,
    adapt the makefile using a text editor. Change the value of
    VRUI_MAKEDIR close to the beginning of the file as follows:
    VRUI_MAKEDIR := <Vrui install dir>/share/make
@@ -57,41 +51,17 @@ be used from multiple user accounts.
    step 0. Use $(HOME) to refer to the user's home directory instead
    of ~.
 
-4. Optional: Adapt makefile if the Augmented Reality Sandbox is to be
-   installed in a different location, for example /usr/local. Set
-   INSTALLDIR to the desired target location. The Augmented Reality
-   Sandbox will then be installed in <INSTALLDIR>/bin, and its
-   configuration files will be installed in <INSTALLDIR>/etc (where
-   <INSTALLDIR> is the value of INSTALLDIR set in the makefile).
-
-5. Build the Augmented Reality Sandbox:
+4. Build the Augmented Reality Sandbox:
    > make
 
-6. Optional: Install the Augmented Reality Sandbox in the selected
-   target location. This is only necessary if the INSTALLDIR variable in
-   the makefile was changed. By default, the Augmented Reality Sandbox
-   can be run from its base directory. To install:
-   > make install
-   - or, if the target location is a system directory -
+5. Install the Augmented Reality Sandbox in the selected target
+   location. To install:
    > sudo make install
-   This will copy all executables into <INSTALLDIR>/bin, and all
-   configuration files into <INSTALLDIR>/etc.
-
-7. Optional: Add directory containing the Augmented Reality Sandbox
-   executable (~/src/SARndbox-<version>/bin in the default installation,
-   <INSTALLDIR>/bin otherwise) to the user's search path. This allows
-   running the Augmented Reality Sandbox from any directory. Using csh
-   or tcsh:
-   > setenv PATH ${PATH}:~/src/SARndbox-<version>/bin
-   - or -
-   > setenv PATH ${PATH}:<INSTALLDIR>/bin
-   where <INSTALLDIR> is the target location set in the makefile.
-   Using bash:
-   > export PATH=${PATH}:~/src/SARndbox-<version>/bin
-   - or -
-   > export PATH=${PATH}:<INSTALLDIR>/bin
-   These lines can also be added to the user's .cshrc or .bashrc files
-   to make the additions persist between logins.
+   This will copy all executables into <INSTALLDIR>/bin, all
+   configuration files into <INSTALLDIR>/etc/SARndbox-<version>, all
+   resource files into <INSTALLDIR>/share/SARndbox-<version>, and all
+   shader source codes into
+   <INSTALLDIR>/share/SARndbox-<version>/Shaders.
 
 Use
 ===

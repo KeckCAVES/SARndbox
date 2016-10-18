@@ -1,7 +1,7 @@
 /***********************************************************************
 SurfaceRenderer - Class to render a surface defined by a regular grid in
 depth image space.
-Copyright (c) 2012-2015 Oliver Kreylos
+Copyright (c) 2012-2016 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -24,9 +24,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 #include <string>
 #include <vector>
-#include <iostream>
 #include <Misc/PrintInteger.h>
 #include <Misc/ThrowStdErr.h>
+#include <Misc/MessageLogger.h>
 #include <GL/gl.h>
 #include <GL/GLVertexArrayParts.h>
 #include <GL/Extensions/GLARBFragmentShader.h>
@@ -35,72 +35,29 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <GL/Extensions/GLARBTextureFloat.h>
 #include <GL/Extensions/GLARBTextureRectangle.h>
 #include <GL/Extensions/GLARBTextureRg.h>
-#include <GL/Extensions/GLARBVertexBufferObject.h>
 #include <GL/Extensions/GLARBVertexShader.h>
 #include <GL/Extensions/GLEXTFramebufferObject.h>
 #include <GL/GLLightTracker.h>
 #include <GL/GLContextData.h>
+#include <GL/GLTransformationWrappers.h>
 #include <GL/GLGeometryVertex.h>
 
+#include "DepthImageRenderer.h"
+#include "ElevationColorMap.h"
+#include "DEM.h"
 #include "WaterTable2.h"
-
-namespace {
-
-/****************
-Helper functions:
-****************/
-
-GLhandleARB compileVertexShader(const char* shaderFileName)
-	{
-	/* Construct the full shader source file name: */
-	std::string fullShaderFileName=SHADERDIR;
-	fullShaderFileName.push_back('/');
-	fullShaderFileName.append(shaderFileName);
-	fullShaderFileName.append(".vs");
-	
-	/* Compile and return the vertex shader: */
-	return glCompileVertexShaderFromFile(fullShaderFileName.c_str());
-	}
-
-GLhandleARB compileFragmentShader(const char* shaderFileName)
-	{
-	/* Construct the full shader source file name: */
-	std::string fullShaderFileName=SHADERDIR;
-	fullShaderFileName.push_back('/');
-	fullShaderFileName.append(shaderFileName);
-	fullShaderFileName.append(".fs");
-	
-	/* Compile and return the fragment shader: */
-	return glCompileFragmentShaderFromFile(fullShaderFileName.c_str());
-	}
-
-}
+#include "ShaderHelper.h"
+#include "Config.h"
 
 /******************************************
 Methods of class SurfaceRenderer::DataItem:
 ******************************************/
 
 SurfaceRenderer::DataItem::DataItem(void)
-	:vertexBuffer(0),indexBuffer(0),
-	 depthTexture(0),depthTextureVersion(0),
-	 depthShader(0),elevationShader(0),
-	 contourLineFramebufferObject(0),contourLineDepthBufferObject(0),contourLineColorTextureObject(0),
-	 heightMapShader(0),lightTrackerVersion(0),surfaceSettingsVersion(0),
+	:contourLineFramebufferObject(0),contourLineDepthBufferObject(0),contourLineColorTextureObject(0),contourLineVersion(0),
+	 heightMapShader(0),surfaceSettingsVersion(0),lightTrackerVersion(0),
 	 globalAmbientHeightMapShader(0),shadowedIlluminatedHeightMapShader(0)
 	{
-	/* Check if all required extensions are supported: */
-	bool supported=GLARBFragmentShader::isSupported();
-	supported=supported&&GLARBMultitexture::isSupported();
-	supported=supported&&GLARBShaderObjects::isSupported();
-	supported=supported&&GLARBTextureRectangle::isSupported();
-	supported=supported&&GLARBTextureRg::isSupported();
-	supported=supported&&GLARBTextureFloat::isSupported();
-	supported=supported&&GLARBVertexBufferObject::isSupported();
-	supported=supported&&GLARBVertexShader::isSupported();
-	supported=supported&&GLEXTFramebufferObject::isSupported();
-	if(!supported)
-		Misc::throwStdErr("SurfaceRenderer: Not all required extensions are supported by local OpenGL");
-	
 	/* Initialize all required extensions: */
 	GLARBFragmentShader::initExtension();
 	GLARBMultitexture::initExtension();
@@ -108,24 +65,13 @@ SurfaceRenderer::DataItem::DataItem(void)
 	GLARBTextureFloat::initExtension();
 	GLARBTextureRectangle::initExtension();
 	GLARBTextureRg::initExtension();
-	GLARBVertexBufferObject::initExtension();
 	GLARBVertexShader::initExtension();
 	GLEXTFramebufferObject::initExtension();
-	
-	/* Allocate the buffers and textures: */
-	glGenBuffersARB(1,&vertexBuffer);
-	glGenBuffersARB(1,&indexBuffer);
-	glGenTextures(1,&depthTexture);
 	}
 
 SurfaceRenderer::DataItem::~DataItem(void)
 	{
 	/* Release all allocated buffers, textures, and shaders: */
-	glDeleteBuffersARB(1,&vertexBuffer);
-	glDeleteBuffersARB(1,&indexBuffer);
-	glDeleteTextures(1,&depthTexture);
-	glDeleteObjectARB(depthShader);
-	glDeleteObjectARB(elevationShader);
 	glDeleteFramebuffersEXT(1,&contourLineFramebufferObject);
 	glDeleteRenderbuffersEXT(1,&contourLineDepthBufferObject);
 	glDeleteTextures(1,&contourLineColorTextureObject);
@@ -161,7 +107,8 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 		
 		std::string vertexUniforms="\
 			uniform sampler2DRect depthSampler; // Sampler for the depth image-space elevation texture\n\
-			uniform mat4 depthProjection; // Transformation from depth image space to camera space\n";
+			uniform mat4 depthProjection; // Transformation from depth image space to camera space\n\
+			uniform mat4 projectionModelviewDepthProjection; // Transformation from depth image space to clip space\n";
 		
 		std::string vertexVaryings;
 		
@@ -171,29 +118,46 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 				{\n\
 				/* Get the vertex' depth image-space z coordinate from the texture: */\n\
 				vec4 vertexDic=gl_Vertex;\n\
-				vertexDic.z=texture2DRect(depthSampler,vertexDic.xy).r;\n\
+				vertexDic.z=texture2DRect(depthSampler,gl_Vertex.xy).r;\n\
 				\n\
-				/* Transform the vertex from depth image space to camera space: */\n\
+				/* Transform the vertex from depth image space to camera space and normalize it: */\n\
 				vec4 vertexCc=depthProjection*vertexDic;\n\
+				vertexCc/=vertexCc.w;\n\
 				\n";
 		
-		if(useHeightMap)
+		if(dem!=0)
+			{
+			/* Add declarations for DEM matching: */
+			vertexUniforms+="\
+				uniform mat4 demTransform; // Transformation from camera space to DEM space\n\
+				uniform sampler2DRect demSampler; // Sampler for the DEM texture\n\
+				uniform float demDistScale; // Distance from surface to DEM at which the color map saturates\n";
+			
+			vertexVaryings+="\
+				varying float demDist; // Scaled signed distance from surface to DEM\n";
+			
+			/* Add DEM matching code to vertex shader's main function: */
+			vertexMain+="\
+				/* Transform the camera-space vertex to scaled DEM space: */\n\
+				vec4 vertexDem=demTransform*vertexCc;\n\
+				\n\
+				/* Calculate scaled DEM-surface distance: */\n\
+				demDist=(vertexDem.z-texture2DRect(demSampler,vertexDem.xy).r)*demDistScale;\n\
+				\n";
+			}
+		else if(elevationColorMap!=0)
 			{
 			/* Add declarations for height mapping: */
 			vertexUniforms+="\
-				uniform vec4 basePlane; // Plane equation of the base plane\n\
-				uniform vec2 heightColorMapTransformation; // Transformation from elevation to height color map texture coordinate\n";
+				uniform vec4 heightColorMapPlaneEq; // Plane equation of the base plane in camera space, scaled for height map textures\n";
 			
 			vertexVaryings+="\
 				varying float heightColorMapTexCoord; // Texture coordinate for the height color map\n";
 			
 			/* Add height mapping code to vertex shader's main function: */
 			vertexMain+="\
-				/* Plug camera-space vertex into the base plane equation: */\n\
-				float elevation=dot(basePlane,vertexCc)/vertexCc.w;\n\
-				\n\
-				/* Transform elevation to height color map texture coordinate: */\n\
-				heightColorMapTexCoord=elevation*heightColorMapTransformation.x+heightColorMapTransformation.y;\n\
+				/* Plug camera-space vertex into the scaled and offset base plane equation: */\n\
+				heightColorMapTexCoord=dot(heightColorMapPlaneEq,vertexCc);\n\
 				\n";
 			}
 		
@@ -201,10 +165,11 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 			{
 			/* Add declarations for illumination: */
 			vertexUniforms+="\
-				uniform mat4 tangentDepthProjection; // Transformation from depth image space to camera space for tangent planes\n";
+				uniform mat4 modelview; // Transformation from camera space to eye space\n\
+				uniform mat4 tangentModelviewDepthProjection; // Transformation from depth image space to eye space for tangent planes\n";
 			
 			vertexVaryings+="\
-				varying vec4 diffColor,specColor; // Diffuse and specular colors\n";
+				varying vec4 diffColor,specColor; // Diffuse and specular colors, interpolated separately for correct highlights\n";
 			
 			/* Add illumination code to vertex shader's main function: */
 			vertexMain+="\
@@ -215,12 +180,9 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 				tangentDic.z=2.0;\n\
 				tangentDic.w=-dot(vertexDic.xyz,tangentDic.xyz)/vertexDic.w;\n\
 				\n\
-				/* Transform the vertex' tangent plane from depth image space to camera space: */\n\
-				vec3 normalCc=(tangentDepthProjection*tangentDic).xyz;\n\
-				\n\
-				/* Transform vertex and normal to eye coordinates for illumination: */\n\
-				vec4 vertexEc=gl_ModelViewMatrix*vertexCc;\n\
-				vec3 normalEc=normalize(gl_NormalMatrix*normalCc);\n\
+				/* Transform the vertex and its tangent plane from depth image space to eye space: */\n\
+				vec4 vertexEc=modelview*vertexCc;\n\
+				vec3 normalEc=normalize((tangentModelviewDepthProjection*tangentDic).xyz);\n\
 				\n\
 				/* Initialize the color accumulators: */\n\
 				diffColor=gl_LightModel.ambient*gl_FrontMaterial.ambient;\n\
@@ -255,26 +217,25 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 					\n";
 			}
 		
-		if(waterTable!=0)
+		if(waterTable!=0&&dem==0)
 			{
 			/* Add declarations for water handling: */
 			vertexUniforms+="\
-				uniform mat4 waterLevelTextureTransformation; // Transformation from camera space to water level texture coordinate space\n";
+				uniform mat4 waterTransform; // Transformation from camera space to water level texture coordinate space\n";
 			vertexVaryings+="\
-				varying vec2 waterLevelTexCoord; // Texture coordinate for water level texture\n";
+				varying vec2 waterTexCoord; // Texture coordinate for water level texture\n";
 			
 			/* Add water handling code to vertex shader's main function: */
 			vertexMain+="\
 				/* Transform the vertex from camera space to water level texture coordinate space: */\n\
-				vec4 wltc=waterLevelTextureTransformation*vertexCc;\n\
-				waterLevelTexCoord=wltc.xy/wltc.w;\n\
+				waterTexCoord=(waterTransform*vertexCc).xy;\n\
 				\n";
 			}
 		
 		/* Finish the vertex shader's main function: */
 		vertexMain+="\
-				/* Transform vertex to clip coordinates: */\n\
-				gl_Position=gl_ModelViewProjectionMatrix*vertexCc;\n\
+				/* Transform vertex from depth image space to clip space: */\n\
+				gl_Position=projectionModelviewDepthProjection*vertexDic;\n\
 				}\n";
 		
 		/* Compile the vertex shader: */
@@ -296,7 +257,23 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 			void main()\n\
 				{\n";
 		
-		if(useHeightMap)
+		if(dem!=0)
+			{
+			/* Add declarations for DEM matching: */
+			fragmentVaryings+="\
+				varying float demDist; // Scaled signed distance from surface to DEM\n";
+			
+			/* Add DEM matching code to the fragment shader's main function: */
+			fragmentMain+="\
+				/* Calculate the fragment's color from a double-ramp function: */\n\
+				vec4 baseColor;\n\
+				if(demDist<0.0)\n\
+					baseColor=mix(vec4(1.0,1.0,1.0,1.0),vec4(1.0,0.0,0.0,1.0),min(-demDist,1.0));\n\
+				else\n\
+					baseColor=mix(vec4(1.0,1.0,1.0,1.0),vec4(0.0,0.0,1.0,1.0),min(demDist,1.0));\n\
+				\n";
+			}
+		else if(elevationColorMap!=0)
 			{
 			/* Add declarations for height mapping: */
 			fragmentUniforms+="\
@@ -350,7 +327,7 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 				\n";
 			}
 		
-		if(waterTable!=0)
+		if(waterTable!=0&&dem==0)
 			{
 			/* Declare the water handling functions: */
 			fragmentDeclarations+="\
@@ -384,7 +361,7 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 			}\n";
 		
 		/* Compile the fragment shader: */
-		shaders.push_back(glCompileFragmentShaderFromStrings(7,fragmentDeclarations.c_str(),"\t\t\n",fragmentUniforms.c_str(),fragmentVaryings.c_str(),"\t\t\n","\t\t\n",fragmentMain.c_str()));
+		shaders.push_back(glCompileFragmentShaderFromStrings(7,fragmentDeclarations.c_str(),"\t\t\n",fragmentUniforms.c_str(),"\t\t\n",fragmentVaryings.c_str(),"\t\t\n",fragmentMain.c_str()));
 		
 		/* Link the shader program: */
 		result=glLinkShader(shaders);
@@ -402,10 +379,17 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 		/* Query common uniform variables: */
 		*(ulPtr++)=glGetUniformLocationARB(result,"depthSampler");
 		*(ulPtr++)=glGetUniformLocationARB(result,"depthProjection");
-		if(useHeightMap)
+		if(dem!=0)
 			{
-			*(ulPtr++)=glGetUniformLocationARB(result,"basePlane");
-			*(ulPtr++)=glGetUniformLocationARB(result,"heightColorMapTransformation");
+			/* Query DEM matching uniform variables: */
+			*(ulPtr++)=glGetUniformLocationARB(result,"demTransform");
+			*(ulPtr++)=glGetUniformLocationARB(result,"demSampler");
+			*(ulPtr++)=glGetUniformLocationARB(result,"demDistScale");
+			}
+		else if(elevationColorMap!=0)
+			{
+			/* Query height color mapping uniform variables: */
+			*(ulPtr++)=glGetUniformLocationARB(result,"heightColorMapPlaneEq");
 			*(ulPtr++)=glGetUniformLocationARB(result,"heightColorMapSampler");
 			}
 		if(drawContourLines)
@@ -416,17 +400,20 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 		if(illuminate)
 			{
 			/* Query illumination uniform variables: */
-			*(ulPtr++)=glGetUniformLocationARB(result,"tangentDepthProjection");
+			*(ulPtr++)=glGetUniformLocationARB(result,"modelview");
+			*(ulPtr++)=glGetUniformLocationARB(result,"tangentModelviewDepthProjection");
 			}
-		if(waterTable!=0)
+		if(waterTable!=0&&dem==0)
 			{
 			/* Query water handling uniform variables: */
-			*(ulPtr++)=glGetUniformLocationARB(result,"waterLevelTextureTransformation");
+			*(ulPtr++)=glGetUniformLocationARB(result,"waterTransform");
 			*(ulPtr++)=glGetUniformLocationARB(result,"bathymetrySampler");
 			*(ulPtr++)=glGetUniformLocationARB(result,"quantitySampler");
+			*(ulPtr++)=glGetUniformLocationARB(result,"waterCellSize");
 			*(ulPtr++)=glGetUniformLocationARB(result,"waterOpacity");
 			*(ulPtr++)=glGetUniformLocationARB(result,"waterAnimationTime");
 			}
+		*(ulPtr++)=glGetUniformLocationARB(result,"projectionModelviewDepthProjection");
 		}
 	catch(...)
 		{
@@ -439,61 +426,120 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 	return result;
 	}
 
-SurfaceRenderer::SurfaceRenderer(const unsigned int sSize[2],const SurfaceRenderer::PTransform& sDepthProjection,const SurfaceRenderer::Plane& sBasePlane)
-	:depthProjection(sDepthProjection),
-	 basePlane(sBasePlane),
-	 usePreboundDepthTexture(false),
+void SurfaceRenderer::renderPixelCornerElevations(const int viewport[4],const PTransform& projectionModelview,GLContextData& contextData,SurfaceRenderer::DataItem* dataItem) const
+	{
+	/* Save the currently-bound frame buffer and clear color: */
+	GLint currentFrameBuffer;
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT,&currentFrameBuffer);
+	GLfloat currentClearColor[4];
+	glGetFloatv(GL_COLOR_CLEAR_VALUE,currentClearColor);
+	
+	/* Check if the contour line rendering frame buffer needs to be created: */
+	if(dataItem->contourLineFramebufferObject==0)
+		{
+		/* Initialize the frame buffer: */
+		for(int i=0;i<2;++i)
+			dataItem->contourLineFramebufferSize[i]=0;
+		glGenFramebuffersEXT(1,&dataItem->contourLineFramebufferObject);
+		glGenRenderbuffersEXT(1,&dataItem->contourLineDepthBufferObject);
+		glGenTextures(1,&dataItem->contourLineColorTextureObject);
+		}
+	
+	/* Bind the contour line rendering frame buffer object: */
+	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->contourLineFramebufferObject);
+	
+	/* Check if the contour line frame buffer needs to be resized: */
+	if(dataItem->contourLineFramebufferSize[0]!=(unsigned int)(viewport[2]+1)||dataItem->contourLineFramebufferSize[1]!=(unsigned int)(viewport[3]+1))
+		{
+		/* Remember if the render buffers must still be attached to the frame buffer: */
+		bool mustAttachBuffers=dataItem->contourLineFramebufferSize[0]==0&&dataItem->contourLineFramebufferSize[1]==0;
+		
+		/* Update the frame buffer size: */
+		for(int i=0;i<2;++i)
+			dataItem->contourLineFramebufferSize[i]=(unsigned int)(viewport[2+i]+1);
+		
+		/* Resize the topographic contour line rendering depth buffer: */
+		glBindRenderbufferEXT(GL_RENDERBUFFER_EXT,dataItem->contourLineDepthBufferObject);
+		glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT,GL_DEPTH_COMPONENT,dataItem->contourLineFramebufferSize[0],dataItem->contourLineFramebufferSize[1]);
+		glBindRenderbufferEXT(GL_RENDERBUFFER_EXT,0);
+		
+		/* Resize the topographic contour line rendering color texture: */
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->contourLineColorTextureObject);
+		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_S,GL_CLAMP);
+		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_T,GL_CLAMP);
+		glTexImage2D(GL_TEXTURE_RECTANGLE_ARB,0,GL_R32F,dataItem->contourLineFramebufferSize[0],dataItem->contourLineFramebufferSize[1],0,GL_LUMINANCE,GL_UNSIGNED_BYTE,0);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
+		
+		if(mustAttachBuffers)
+			{
+			glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT,GL_DEPTH_ATTACHMENT_EXT,GL_RENDERBUFFER_EXT,dataItem->contourLineDepthBufferObject);
+			glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT,GL_COLOR_ATTACHMENT0_EXT,GL_TEXTURE_RECTANGLE_ARB,dataItem->contourLineColorTextureObject,0);
+			glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);
+			glReadBuffer(GL_NONE);
+			}
+		}
+	
+	/* Extend the viewport to render the corners of all pixels: */
+	glViewport(0,0,viewport[2]+1,viewport[3]+1);
+	glClearColor(0.0f,0.0f,0.0f,1.0f);
+	glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+	
+	/* Shift the projection matrix by half a pixel to render the corners of the final pixels: */
+	PTransform shiftedProjectionModelview=projectionModelview;
+	PTransform::Matrix& spmm=shiftedProjectionModelview.getMatrix();
+	Scalar xs=Scalar(viewport[2])/Scalar(viewport[2]+1);
+	Scalar ys=Scalar(viewport[3])/Scalar(viewport[3]+1);
+	for(int j=0;j<4;++j)
+		{
+		spmm(0,j)*=xs;
+		spmm(1,j)*=ys;
+		}
+	
+	/* Render the surface elevation into the half-pixel offset frame buffer: */
+	depthImageRenderer->renderElevation(shiftedProjectionModelview,contextData);
+	
+	/* Restore the original viewport: */
+	glViewport(viewport[0],viewport[1],viewport[2],viewport[3]);
+	
+	/* Restore the original clear color and frame buffer binding: */
+	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,currentFrameBuffer);
+	glClearColor(currentClearColor[0],currentClearColor[1],currentClearColor[2],currentClearColor[3]);
+	}
+
+SurfaceRenderer::SurfaceRenderer(const DepthImageRenderer* sDepthImageRenderer)
+	:depthImageRenderer(sDepthImageRenderer),
 	 drawContourLines(true),contourLineFactor(1.0f),
-	 useHeightMap(true),heightMapScale(1.0f),heightMapOffset(0.0f),
-	 illuminate(false),waterTable(0),advectWaterTexture(false),surfaceSettingsVersion(1),
-	 waterOpacity(2.0f),
-	 depthImageVersion(1),
+	 elevationColorMap(0),
+	 dem(0),demDistScale(1.0f),
+	 illuminate(false),
+	 waterTable(0),advectWaterTexture(false),waterOpacity(2.0f),
+	 surfaceSettingsVersion(1),
 	 animationTime(0.0)
 	{
-	/* Monitor the external shader source files: */
-	fileMonitor.addPath((std::string(SHADERDIR)+std::string("/SurfaceAddContourLines.fs")).c_str(),IO::FileMonitor::Modified,Misc::createFunctionCall(this,&SurfaceRenderer::shaderSourceFileChanged));
-	fileMonitor.addPath((std::string(SHADERDIR)+std::string("/SurfaceIlluminate.fs")).c_str(),IO::FileMonitor::Modified,Misc::createFunctionCall(this,&SurfaceRenderer::shaderSourceFileChanged));
-	fileMonitor.addPath((std::string(SHADERDIR)+std::string("/SurfaceAddWaterColor.fs")).c_str(),IO::FileMonitor::Modified,Misc::createFunctionCall(this,&SurfaceRenderer::shaderSourceFileChanged));
-	fileMonitor.startPolling();
-	
 	/* Copy the depth image size: */
 	for(int i=0;i<2;++i)
-		size[i]=sSize[i];
+		depthImageSize[i]=depthImageRenderer->getDepthImageSize(i);
 	
 	/* Check if the depth projection matrix retains right-handedness: */
-	PTransform::Point p1=depthProjection.transform(PTransform::Point(0,0,0));
-	PTransform::Point p2=depthProjection.transform(PTransform::Point(1,0,0));
-	PTransform::Point p3=depthProjection.transform(PTransform::Point(0,1,0));
-	PTransform::Point p4=depthProjection.transform(PTransform::Point(0,0,1));
-	bool depthProjectionInverts=Geometry::cross(p2-p1,p3-p1)*(p4-p1)<Scalar(0);
+	const PTransform& depthProjection=depthImageRenderer->getDepthProjection();
+	Point p1=depthProjection.transform(Point(0,0,0));
+	Point p2=depthProjection.transform(Point(1,0,0));
+	Point p3=depthProjection.transform(Point(0,1,0));
+	Point p4=depthProjection.transform(Point(0,0,1));
+	bool depthProjectionInverts=((p2-p1)^(p3-p1))*(p4-p1)<Scalar(0);
 	
-	/* Convert the depth projection matrix to column-major OpenGL format: */
-	GLfloat* dpmPtr=depthProjectionMatrix;
-	for(int j=0;j<4;++j)
-		for(int i=0;i<4;++i,++dpmPtr)
-			*dpmPtr=depthProjection.getMatrix()(i,j);
-	
-	/* Calculate the tangent plane depth projection: */
-	PTransform tangentDepthProjection=Geometry::invert(depthProjection);
+	/* Calculate the transposed tangent plane depth projection: */
+	tangentDepthProjection=Geometry::invert(depthProjection);
 	if(depthProjectionInverts)
-		tangentDepthProjection.leftMultiply(PTransform::scale(PTransform::Scale(-1,-1,-1)));
+		tangentDepthProjection*=PTransform::scale(PTransform::Scale(-1,-1,-1));
 	
-	GLfloat* tdpmPtr=tangentDepthProjectionMatrix;
-	for(int i=0;i<4;++i)
-		for(int j=0;j<4;++j,++tdpmPtr)
-			*tdpmPtr=tangentDepthProjection.getMatrix()(i,j);
-	
-	/* Convert the base plane to a homogeneous plane equation: */
-	for(int i=0;i<3;++i)
-		basePlaneEq[i]=GLfloat(basePlane.getNormal()[i]);
-	basePlaneEq[3]=GLfloat(-basePlane.getOffset());
-	
-	/* Initialize the depth image: */
-	depthImage=Kinect::FrameBuffer(size[0],size[1],size[1]*size[0]*sizeof(float));
-	float* diPtr=static_cast<float*>(depthImage.getBuffer());
-	for(unsigned int y=0;y<size[1];++y)
-		for(unsigned int x=0;x<size[0];++x,++diPtr)
-			*diPtr=0.0f;
+	/* Monitor the external shader source files: */
+	fileMonitor.addPath((std::string(CONFIG_SHADERDIR)+std::string("/SurfaceAddContourLines.fs")).c_str(),IO::FileMonitor::Modified,Misc::createFunctionCall(this,&SurfaceRenderer::shaderSourceFileChanged));
+	fileMonitor.addPath((std::string(CONFIG_SHADERDIR)+std::string("/SurfaceIlluminate.fs")).c_str(),IO::FileMonitor::Modified,Misc::createFunctionCall(this,&SurfaceRenderer::shaderSourceFileChanged));
+	fileMonitor.addPath((std::string(CONFIG_SHADERDIR)+std::string("/SurfaceAddWaterColor.fs")).c_str(),IO::FileMonitor::Modified,Misc::createFunctionCall(this,&SurfaceRenderer::shaderSourceFileChanged));
+	fileMonitor.startPolling();
 	}
 
 void SurfaceRenderer::initContext(GLContextData& contextData) const
@@ -502,78 +548,13 @@ void SurfaceRenderer::initContext(GLContextData& contextData) const
 	DataItem* dataItem=new DataItem;
 	contextData.addDataItem(this,dataItem);
 	
-	/* Upload the grid of template vertices into the vertex buffer: */
-	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,dataItem->vertexBuffer);
-	glBufferDataARB(GL_ARRAY_BUFFER_ARB,size[1]*size[0]*sizeof(Vertex),0,GL_STATIC_DRAW_ARB);
-	Vertex* vPtr=static_cast<Vertex*>(glMapBufferARB(GL_ARRAY_BUFFER_ARB,GL_WRITE_ONLY_ARB));
-	for(unsigned int y=0;y<size[1];++y)
-		for(unsigned int x=0;x<size[0];++x,++vPtr)
-			{
-			vPtr->position[0]=float(x)+0.5f;
-			vPtr->position[1]=float(y)+0.5f;
-			vPtr->position[2]=0.0f;
-			}
-	glUnmapBufferARB(GL_ARRAY_BUFFER_ARB);
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,0);
-	
-	/* Upload the surface's triangle indices into the index buffer: */
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,dataItem->indexBuffer);
-	glBufferDataARB(GL_ELEMENT_ARRAY_BUFFER_ARB,(size[1]-1)*size[0]*2*sizeof(GLuint),0,GL_STATIC_DRAW_ARB);
-	GLuint* iPtr=static_cast<GLuint*>(glMapBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,GL_WRITE_ONLY_ARB));
-	for(unsigned int y=1;y<size[1];++y)
-		for(unsigned int x=0;x<size[0];++x,iPtr+=2)
-			{
-			iPtr[0]=GLuint(y*size[0]+x);
-			iPtr[1]=GLuint((y-1)*size[0]+x);
-			}
-	glUnmapBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB);
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,0);
-	
-	/* Initialize the depth image texture: */
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->depthTexture);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_S,GL_CLAMP);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_T,GL_CLAMP);
-	glTexImage2D(GL_TEXTURE_RECTANGLE_ARB,0,GL_LUMINANCE32F_ARB,size[0],size[1],0,GL_LUMINANCE,GL_UNSIGNED_BYTE,0);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-	
-	/* Create the surface depth render shader: */
-	{
-	GLhandleARB vertexShader=compileVertexShader("SurfaceDepthShader");
-	GLhandleARB fragmentShader=compileFragmentShader("SurfaceDepthShader");
-	dataItem->depthShader=glLinkShader(vertexShader,fragmentShader);
-	glDeleteObjectARB(vertexShader);
-	glDeleteObjectARB(fragmentShader);
-	dataItem->depthShaderUniforms[0]=glGetUniformLocationARB(dataItem->depthShader,"depthSampler");
-	dataItem->depthShaderUniforms[1]=glGetUniformLocationARB(dataItem->depthShader,"projectionModelviewDepthProjection");
-	}
-	
-	/* Create the surface elevation render shader: */
-	{
-	GLhandleARB vertexShader=compileVertexShader("SurfaceElevationShader");
-	GLhandleARB fragmentShader=compileFragmentShader("SurfaceElevationShader");
-	dataItem->elevationShader=glLinkShader(vertexShader,fragmentShader);
-	glDeleteObjectARB(vertexShader);
-	glDeleteObjectARB(fragmentShader);
-	dataItem->elevationShaderUniforms[0]=glGetUniformLocationARB(dataItem->elevationShader,"depthSampler");
-	dataItem->elevationShaderUniforms[1]=glGetUniformLocationARB(dataItem->elevationShader,"depthProjection");
-	dataItem->elevationShaderUniforms[2]=glGetUniformLocationARB(dataItem->elevationShader,"basePlane");
-	}
-	
 	/* Create the height map render shader: */
 	dataItem->heightMapShader=createSinglePassSurfaceShader(*contextData.getLightTracker(),dataItem->heightMapShaderUniforms);
 	dataItem->surfaceSettingsVersion=surfaceSettingsVersion;
 	dataItem->lightTrackerVersion=contextData.getLightTracker()->getVersion();
 	
 	/* Create the global ambient height map render shader: */
-	{
-	GLhandleARB vertexShader=compileVertexShader("SurfaceGlobalAmbientHeightMapShader");
-	GLhandleARB fragmentShader=compileFragmentShader("SurfaceGlobalAmbientHeightMapShader");
-	dataItem->globalAmbientHeightMapShader=glLinkShader(vertexShader,fragmentShader);
-	glDeleteObjectARB(vertexShader);
-	glDeleteObjectARB(fragmentShader);
+	dataItem->globalAmbientHeightMapShader=linkVertexAndFragmentShader("SurfaceGlobalAmbientHeightMapShader");
 	dataItem->globalAmbientHeightMapShaderUniforms[0]=glGetUniformLocationARB(dataItem->globalAmbientHeightMapShader,"depthSampler");
 	dataItem->globalAmbientHeightMapShaderUniforms[1]=glGetUniformLocationARB(dataItem->globalAmbientHeightMapShader,"depthProjection");
 	dataItem->globalAmbientHeightMapShaderUniforms[2]=glGetUniformLocationARB(dataItem->globalAmbientHeightMapShader,"basePlane");
@@ -584,15 +565,9 @@ void SurfaceRenderer::initContext(GLContextData& contextData) const
 	dataItem->globalAmbientHeightMapShaderUniforms[7]=glGetUniformLocationARB(dataItem->globalAmbientHeightMapShader,"waterLevelSampler");
 	dataItem->globalAmbientHeightMapShaderUniforms[8]=glGetUniformLocationARB(dataItem->globalAmbientHeightMapShader,"waterLevelTextureTransformation");
 	dataItem->globalAmbientHeightMapShaderUniforms[9]=glGetUniformLocationARB(dataItem->globalAmbientHeightMapShader,"waterOpacity");
-	}
 	
 	/* Create the shadowed illuminated height map render shader: */
-	{
-	GLhandleARB vertexShader=compileVertexShader("SurfaceShadowedIlluminatedHeightMapShader");
-	GLhandleARB fragmentShader=compileFragmentShader("SurfaceShadowedIlluminatedHeightMapShader");
-	dataItem->shadowedIlluminatedHeightMapShader=glLinkShader(vertexShader,fragmentShader);
-	glDeleteObjectARB(vertexShader);
-	glDeleteObjectARB(fragmentShader);
+	dataItem->shadowedIlluminatedHeightMapShader=linkVertexAndFragmentShader("SurfaceShadowedIlluminatedHeightMapShader");
 	dataItem->shadowedIlluminatedHeightMapShaderUniforms[0]=glGetUniformLocationARB(dataItem->shadowedIlluminatedHeightMapShader,"depthSampler");
 	dataItem->shadowedIlluminatedHeightMapShaderUniforms[1]=glGetUniformLocationARB(dataItem->shadowedIlluminatedHeightMapShader,"depthProjection");
 	dataItem->shadowedIlluminatedHeightMapShaderUniforms[2]=glGetUniformLocationARB(dataItem->shadowedIlluminatedHeightMapShader,"tangentDepthProjection");
@@ -607,12 +582,6 @@ void SurfaceRenderer::initContext(GLContextData& contextData) const
 	dataItem->shadowedIlluminatedHeightMapShaderUniforms[11]=glGetUniformLocationARB(dataItem->shadowedIlluminatedHeightMapShader,"shadowTextureSampler");
 	dataItem->shadowedIlluminatedHeightMapShaderUniforms[12]=glGetUniformLocationARB(dataItem->shadowedIlluminatedHeightMapShader,"shadowProjection");
 	}
-	}
-
-void SurfaceRenderer::setUsePreboundDepthTexture(bool newUsePreboundDepthTexture)
-	{
-	usePreboundDepthTexture=newUsePreboundDepthTexture;
-	}
 
 void SurfaceRenderer::setDrawContourLines(bool newDrawContourLines)
 	{
@@ -626,20 +595,29 @@ void SurfaceRenderer::setContourLineDistance(GLfloat newContourLineDistance)
 	contourLineFactor=1.0f/newContourLineDistance;
 	}
 
-void SurfaceRenderer::setUseHeightMap(bool newUseHeightMap)
+void SurfaceRenderer::setElevationColorMap(ElevationColorMap* newElevationColorMap)
 	{
-	useHeightMap=newUseHeightMap;
-	++surfaceSettingsVersion;
+	/* Check if setting this elevation color map invalidates the shader: */
+	if(dem==0&&((newElevationColorMap!=0&&elevationColorMap==0)||(newElevationColorMap==0&&elevationColorMap!=0)))
+		++surfaceSettingsVersion;
+	
+	/* Set the elevation color map: */
+	elevationColorMap=newElevationColorMap;
 	}
 
-void SurfaceRenderer::setHeightMapRange(GLsizei newHeightMapSize,GLfloat newMinElevation,GLfloat newMaxElevation)
+void SurfaceRenderer::setDem(DEM* newDem)
 	{
-	/* Calculate the new height map elevation scaling and offset coefficients: */
-	GLdouble hms=GLdouble(newHeightMapSize-1)/((newMaxElevation-newMinElevation)*GLdouble(newHeightMapSize));
-	GLdouble hmo=0.5/GLdouble(newHeightMapSize)-hms*newMinElevation;
+	/* Check if setting this DEM invalidates the shader: */
+	if((newDem!=0&&dem==0)||(newDem==0&&dem!=0))
+		++surfaceSettingsVersion;
 	
-	heightMapScale=GLfloat(hms);
-	heightMapOffset=GLfloat(hmo);
+	/* Set the new DEM: */
+	dem=newDem;
+	}
+
+void SurfaceRenderer::setDemDistScale(GLfloat newDemDistScale)
+	{
+	demDistScale=newDemDistScale;
 	}
 
 void SurfaceRenderer::setIlluminate(bool newIlluminate)
@@ -666,13 +644,6 @@ void SurfaceRenderer::setWaterOpacity(GLfloat newWaterOpacity)
 	waterOpacity=newWaterOpacity;
 	}
 
-void SurfaceRenderer::setDepthImage(const Kinect::FrameBuffer& newDepthImage)
-	{
-	/* Update the depth image: */
-	depthImage=newDepthImage;
-	++depthImageVersion;
-	}
-
 void SurfaceRenderer::setAnimationTime(double newAnimationTime)
 	{
 	/* Set the new animation time: */
@@ -682,300 +653,20 @@ void SurfaceRenderer::setAnimationTime(double newAnimationTime)
 	fileMonitor.processEvents();
 	}
 
-void SurfaceRenderer::glRenderDepthOnly(const SurfaceRenderer::PTransform& modelviewProjection,GLContextData& contextData) const
+void SurfaceRenderer::renderSinglePass(const int viewport[4],const PTransform& projection,const OGTransform& modelview,GLContextData& contextData) const
 	{
 	/* Get the data item: */
 	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
 	
-	/* Bind the depth rendering shader: */
-	glUseProgramObjectARB(dataItem->depthShader);
-	
-	/* Bind the vertex and index buffers: */
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,dataItem->vertexBuffer);
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,dataItem->indexBuffer);
-	
-	/* Set up the depth image texture: */
-	if(!usePreboundDepthTexture)
-		{
-		/* Bind the depth image texture: */
-		glActiveTextureARB(GL_TEXTURE0_ARB);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->depthTexture);
-		
-		/* Check if the texture is outdated: */
-		if(dataItem->depthTextureVersion!=depthImageVersion)
-			{
-			/* Upload the new depth texture: */
-			glTexSubImage2D(GL_TEXTURE_RECTANGLE_ARB,0,0,0,size[0],size[1],GL_LUMINANCE,GL_FLOAT,depthImage.getBuffer());
-			
-			/* Mark the depth texture as current: */
-			dataItem->depthTextureVersion=depthImageVersion;
-			}
-		}
-	glUniform1iARB(dataItem->depthShaderUniforms[0],0);
-	
-	/* Upload the combined projection, modelview, and depth projection matrix: */
-	PTransform pmvdp=modelviewProjection;
-	pmvdp*=depthProjection;
-	GLfloat pmvdpMatrix[16];
-	GLfloat* pmvdpPtr=pmvdpMatrix;
-	for(int j=0;j<4;++j)
-		for(int i=0;i<4;++i,++pmvdpPtr)
-			*pmvdpPtr=GLfloat(pmvdp.getMatrix()(i,j));
-	glUniformMatrix4fvARB(dataItem->depthShaderUniforms[1],1,GL_FALSE,pmvdpMatrix);
-	
-	/* Draw the surface: */
-	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
-	GLVertexArrayParts::enable(Vertex::getPartsMask());
-	glVertexPointer(static_cast<const Vertex*>(0));
-	for(unsigned int y=1;y<size[1];++y)
-		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
-	GLVertexArrayParts::disable(Vertex::getPartsMask());
-	
-	/* Unbind all textures and buffers: */
-	if(!usePreboundDepthTexture)
-		{
-		glActiveTextureARB(GL_TEXTURE0_ARB);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-		}
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,0);
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,0);
-	
-	/* Unbind the depth rendering shader: */
-	glUseProgramObjectARB(0);
-	}
-
-void SurfaceRenderer::glRenderElevation(GLContextData& contextData) const
-	{
-	/* Get the data item: */
-	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
-	
-	/* Bind the elevation shader: */
-	glUseProgramObjectARB(dataItem->elevationShader);
-	
-	/* Bind the vertex and index buffers: */
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,dataItem->vertexBuffer);
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,dataItem->indexBuffer);
-	
-	/* Set up the depth image texture: */
-	if(!usePreboundDepthTexture)
-		{
-		glActiveTextureARB(GL_TEXTURE0_ARB);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->depthTexture);
-		
-		/* Check if the texture is outdated: */
-		if(dataItem->depthTextureVersion!=depthImageVersion)
-			{
-			/* Upload the new depth texture: */
-			glTexSubImage2D(GL_TEXTURE_RECTANGLE_ARB,0,0,0,size[0],size[1],GL_LUMINANCE,GL_FLOAT,depthImage.getBuffer());
-			
-			/* Mark the depth texture as current: */
-			dataItem->depthTextureVersion=depthImageVersion;
-			}
-		}
-	glUniform1iARB(dataItem->elevationShaderUniforms[0],0);
-	
-	/* Upload the depth projection matrix: */
-	glUniformMatrix4fvARB(dataItem->elevationShaderUniforms[1],1,GL_FALSE,depthProjectionMatrix);
-	
-	/* Upload the base plane equation: */
-	glUniformARB<4>(dataItem->elevationShaderUniforms[2],1,basePlaneEq);
-	
-	/* Draw the surface: */
-	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
-	GLVertexArrayParts::enable(Vertex::getPartsMask());
-	glVertexPointer(static_cast<const Vertex*>(0));
-	for(unsigned int y=1;y<size[1];++y)
-		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
-	GLVertexArrayParts::disable(Vertex::getPartsMask());
-	
-	/* Unbind all textures and buffers: */
-	if(!usePreboundDepthTexture)
-		{
-		glActiveTextureARB(GL_TEXTURE0_ARB);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-		}
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,0);
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,0);
-	
-	/* Unbind the elevation shader: */
-	glUseProgramObjectARB(0);
-	}
-
-void SurfaceRenderer::glPrepareContourLines(GLContextData& contextData) const
-	{
-	/* Get the data item: */
-	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
-	
-	/*********************************************************************
-	Prepare the half-pixel-offset frame buffer for subsequent per-fragment
-	Marching Squares contour line extraction.
-	*********************************************************************/
-	
-	/* Query the current viewport: */
-	GLint viewport[4];
-	glGetIntegerv(GL_VIEWPORT,viewport);
-	
-	/* Save the currently-bound frame buffer and clear color: */
-	GLint currentFrameBuffer;
-	glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT,&currentFrameBuffer);
-	GLfloat currentClearColor[4];
-	glGetFloatv(GL_COLOR_CLEAR_VALUE,currentClearColor);
-	
-	/* Check if the contour line frame buffer needs to be created: */
-	if(dataItem->contourLineFramebufferObject==0)
-		{
-		/* Reset the frame buffer size: */
-		for(int i=0;i<2;++i)
-			dataItem->contourLineFramebufferSize[i]=0;
-		
-		/* Create and bind the frame buffer object: */
-		glGenFramebuffersEXT(1,&dataItem->contourLineFramebufferObject);
-		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->contourLineFramebufferObject);
-		
-		/* Create a depth buffer for topographic contour line rendering: */
-		glGenRenderbuffersEXT(1,&dataItem->contourLineDepthBufferObject);
-		
-		/* Generate a color texture object for topographic contour line rendering: */
-		glGenTextures(1,&dataItem->contourLineColorTextureObject);
-		}
-	else
-		{
-		/* Bind the frame buffer object: */
-		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->contourLineFramebufferObject);
-		}
-	
-	/* Check if the contour line frame buffer needs to be resized: */
-	if(dataItem->contourLineFramebufferSize[0]!=viewport[2]+1||dataItem->contourLineFramebufferSize[1]!=viewport[3]+1)
-		{
-		/* Update the frame buffer size: */
-		bool mustAttachBuffers=dataItem->contourLineFramebufferSize[0]==0&&dataItem->contourLineFramebufferSize[1]==0;
-		for(int i=0;i<2;++i)
-			dataItem->contourLineFramebufferSize[i]=viewport[2+i]+1;
-		
-		/* Resize the topographic contour line rendering depth buffer: */
-		glBindRenderbufferEXT(GL_RENDERBUFFER_EXT,dataItem->contourLineDepthBufferObject);
-		glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT,GL_DEPTH_COMPONENT,dataItem->contourLineFramebufferSize[0],dataItem->contourLineFramebufferSize[1]);
-		glBindRenderbufferEXT(GL_RENDERBUFFER_EXT,0);
-		
-		/* Resize the topographic contour line rendering color texture: */
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->contourLineColorTextureObject);
-		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_S,GL_CLAMP);
-		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_T,GL_CLAMP);
-		glTexImage2D(GL_TEXTURE_RECTANGLE_ARB,0,GL_R32F,dataItem->contourLineFramebufferSize[0],dataItem->contourLineFramebufferSize[1],0,GL_LUMINANCE,GL_UNSIGNED_BYTE,0);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-		
-		if(mustAttachBuffers)
-			{
-			/* Attach the depth render buffer and color texture object to the contour line frame buffer: */
-			glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT,GL_DEPTH_ATTACHMENT_EXT,GL_RENDERBUFFER_EXT,dataItem->contourLineDepthBufferObject);
-			glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT,GL_COLOR_ATTACHMENT0_EXT,GL_TEXTURE_RECTANGLE_ARB,dataItem->contourLineColorTextureObject,0);
-			glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);
-			glReadBuffer(GL_NONE);
-			}
-		}
-	
-	/* Extend the viewport to render the corners of the final pixels: */
-	glViewport(0,0,viewport[2]+1,viewport[3]+1);
-	glClearColor(0.0f,0.0f,0.0f,1.0f);
-	glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-	
-	/* Adjust the projection matrix to render the corners of the final pixels: */
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	GLdouble proj[16];
-	glGetDoublev(GL_PROJECTION_MATRIX,proj);
-	GLdouble xs=GLdouble(viewport[2])/GLdouble(viewport[2]+1);
-	GLdouble ys=GLdouble(viewport[3])/GLdouble(viewport[3]+1);
-	for(int j=0;j<4;++j)
-		{
-		proj[j*4+0]*=xs;
-		proj[j*4+1]*=ys;
-		}
-	glLoadIdentity();
-	glMultMatrixd(proj);
-	
-	/*********************************************************************
-	Render the surface's elevation into the half-pixel offset frame
-	buffer.
-	*********************************************************************/
-	
-	/* Bind the elevation shader: */
-	glUseProgramObjectARB(dataItem->elevationShader);
-	
-	/* Bind the vertex and index buffers: */
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,dataItem->vertexBuffer);
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,dataItem->indexBuffer);
-	
-	/* Set up the depth image texture: */
-	if(!usePreboundDepthTexture)
-		{
-		glActiveTextureARB(GL_TEXTURE0_ARB);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->depthTexture);
-		
-		/* Check if the texture is outdated: */
-		if(dataItem->depthTextureVersion!=depthImageVersion)
-			{
-			/* Upload the new depth texture: */
-			glTexSubImage2D(GL_TEXTURE_RECTANGLE_ARB,0,0,0,size[0],size[1],GL_LUMINANCE,GL_FLOAT,depthImage.getBuffer());
-			
-			/* Mark the depth texture as current: */
-			dataItem->depthTextureVersion=depthImageVersion;
-			}
-		}
-	glUniform1iARB(dataItem->elevationShaderUniforms[0],0);
-	
-	/* Upload the depth projection matrix: */
-	glUniformMatrix4fvARB(dataItem->elevationShaderUniforms[1],1,GL_FALSE,depthProjectionMatrix);
-	
-	/* Upload the base plane equation: */
-	glUniformARB<4>(dataItem->elevationShaderUniforms[2],1,basePlaneEq);
-	
-	/* Draw the surface: */
-	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
-	GLVertexArrayParts::enable(Vertex::getPartsMask());
-	glVertexPointer(static_cast<const Vertex*>(0));
-	for(unsigned int y=1;y<size[1];++y)
-		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
-	GLVertexArrayParts::disable(Vertex::getPartsMask());
-	
-	/* Unbind all textures and buffers: */
-	if(!usePreboundDepthTexture)
-		{
-		glActiveTextureARB(GL_TEXTURE0_ARB);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-		}
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,0);
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,0);
-	
-	/* Unbind the elevation shader: */
-	glUseProgramObjectARB(0);
-	
-	/*********************************************************************
-	Restore previous OpenGL state.
-	*********************************************************************/
-	
-	/* Restore the original viewport and projection matrix: */
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glViewport(viewport[0],viewport[1],viewport[2],viewport[3]);
-	
-	/* Restore the original clear color and frame buffer binding: */
-	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,currentFrameBuffer);
-	glClearColor(currentClearColor[0],currentClearColor[1],currentClearColor[2],currentClearColor[3]);
-	}
-
-void SurfaceRenderer::glRenderSinglePass(GLuint heightColorMapTexture,GLContextData& contextData) const
-	{
-	/* Get the data item: */
-	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
+	/* Calculate the required matrices: */
+	PTransform projectionModelview=projection;
+	projectionModelview*=modelview;
 	
 	/* Check if contour line rendering is enabled: */
 	if(drawContourLines)
 		{
 		/* Run the first rendering pass to create a half-pixel offset texture of surface elevations: */
-		glPrepareContourLines(contextData);
+		renderPixelCornerElevations(viewport,projectionModelview,contextData,dataItem);
 		}
 	else if(dataItem->contourLineFramebufferObject!=0)
 		{
@@ -989,7 +680,7 @@ void SurfaceRenderer::glRenderSinglePass(GLuint heightColorMapTexture,GLContextD
 		}
 	
 	/* Check if the single-pass surface shader is outdated: */
-	if(dataItem->surfaceSettingsVersion!=surfaceSettingsVersion||dataItem->lightTrackerVersion!=contextData.getLightTracker()->getVersion())
+	if(dataItem->surfaceSettingsVersion!=surfaceSettingsVersion||(illuminate&&dataItem->lightTrackerVersion!=contextData.getLightTracker()->getVersion()))
 		{
 		/* Rebuild the shader: */
 		try
@@ -1000,7 +691,7 @@ void SurfaceRenderer::glRenderSinglePass(GLuint heightColorMapTexture,GLContextD
 			}
 		catch(std::runtime_error err)
 			{
-			std::cerr<<"Caught exception "<<err.what()<<" while rebuilding surface shader"<<std::endl;
+			Misc::formattedUserError("SurfaceRenderer::renderSinglePass: Caught exception %s while rebuilding surface shader",err.what());
 			}
 		
 		/* Mark the shader as up-to-date: */
@@ -1012,42 +703,35 @@ void SurfaceRenderer::glRenderSinglePass(GLuint heightColorMapTexture,GLContextD
 	glUseProgramObjectARB(dataItem->heightMapShader);
 	const GLint* ulPtr=dataItem->heightMapShaderUniforms;
 	
-	/* Bind the vertex and index buffers: */
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,dataItem->vertexBuffer);
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,dataItem->indexBuffer);
-	
-	/* Set up the depth image texture: */
-	if(!usePreboundDepthTexture)
-		{
-		glActiveTextureARB(GL_TEXTURE0_ARB);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->depthTexture);
-		
-		/* Check if the texture is outdated: */
-		if(dataItem->depthTextureVersion!=depthImageVersion)
-			{
-			/* Upload the new depth texture: */
-			glTexSubImage2D(GL_TEXTURE_RECTANGLE_ARB,0,0,0,size[0],size[1],GL_LUMINANCE,GL_FLOAT,depthImage.getBuffer());
-			
-			/* Mark the depth texture as current: */
-			dataItem->depthTextureVersion=depthImageVersion;
-			}
-		}
+	/* Bind the current depth image texture: */
+	glActiveTextureARB(GL_TEXTURE0_ARB);
+	depthImageRenderer->bindDepthTexture(contextData);
 	glUniform1iARB(*(ulPtr++),0);
 	
 	/* Upload the depth projection matrix: */
-	glUniformMatrix4fvARB(*(ulPtr++),1,GL_FALSE,depthProjectionMatrix);
+	depthImageRenderer->uploadDepthProjection(*(ulPtr++));
 	
-	if(useHeightMap)
+	if(dem!=0)
 		{
-		/* Upload the base plane equation: */
-		glUniformARB<4>(*(ulPtr++),1,basePlaneEq);
+		/* Upload the DEM transformation: */
+		dem->uploadDemTransform(*(ulPtr++));
 		
-		/* Upload the height color map texture coordinate transformation: */
-		glUniform2fARB(*(ulPtr++),heightMapScale,heightMapOffset);
+		/* Bind the DEM texture: */
+		glActiveTextureARB(GL_TEXTURE1_ARB);
+		dem->bindTexture(contextData);
+		glUniform1iARB(*(ulPtr++),1);
+		
+		/* Upload the DEM distance scale factor: */
+		glUniform1fARB(*(ulPtr++),1.0f/(demDistScale*dem->getVerticalScale()));
+		}
+	else if(elevationColorMap!=0)
+		{
+		/* Upload the texture mapping plane equation: */
+		elevationColorMap->uploadTexturePlane(*(ulPtr++));
 		
 		/* Bind the height color map texture: */
 		glActiveTextureARB(GL_TEXTURE1_ARB);
-		glBindTexture(GL_TEXTURE_1D,heightColorMapTexture);
+		elevationColorMap->bindTexture(contextData);
 		glUniform1iARB(*(ulPtr++),1);
 		}
 	
@@ -1064,14 +748,24 @@ void SurfaceRenderer::glRenderSinglePass(GLuint heightColorMapTexture,GLContextD
 	
 	if(illuminate)
 		{
-		/* Upload the tangent-plane depth projection matrix: */
-		glUniformMatrix4fvARB(*(ulPtr++),1,GL_FALSE,tangentDepthProjectionMatrix);
+		/* Upload the modelview matrix: */
+		glUniformARB(*(ulPtr++),modelview);
+		
+		/* Calculate and upload the tangent-plane modelview depth projection matrix: */
+		PTransform tangentModelviewDepthProjection=tangentDepthProjection;
+		tangentModelviewDepthProjection*=Geometry::invert(modelview);
+		const Scalar* tmdpPtr=tangentModelviewDepthProjection.getMatrix().getEntries();
+		GLfloat matrix[16];
+		GLfloat* mPtr=matrix;
+		for(int i=0;i<16;++i,++tmdpPtr,++mPtr)
+				*mPtr=GLfloat(*tmdpPtr);
+		glUniformMatrix4fvARB(*(ulPtr++),1,GL_FALSE,matrix);
 		}
 	
-	if(waterTable!=0)
+	if(waterTable!=0&&dem==0)
 		{
 		/* Upload the water table texture coordinate matrix: */
-		glUniformMatrix4fvARB(*(ulPtr++),1,GL_FALSE,waterTable->getWaterTextureMatrix());
+		waterTable->uploadWaterTextureTransform(*(ulPtr++));
 		
 		/* Bind the bathymetry texture: */
 		glActiveTextureARB(GL_TEXTURE3_ARB);
@@ -1091,6 +785,9 @@ void SurfaceRenderer::glRenderSinglePass(GLuint heightColorMapTexture,GLContextD
 		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
 		glUniform1iARB(*(ulPtr++),4);
 		
+		/* Upload the water grid cell size for normal vector calculation: */
+		glUniformARB<2>(*(ulPtr++),1,waterTable->getCellSize());
+		
 		/* Upload the water opacity factor: */
 		glUniform1fARB(*(ulPtr++),waterOpacity);
 		
@@ -1098,16 +795,16 @@ void SurfaceRenderer::glRenderSinglePass(GLuint heightColorMapTexture,GLContextD
 		glUniform1fARB(*(ulPtr++),GLfloat(animationTime));
 		}
 	
+	/* Upload the combined projection, modelview, and depth unprojection matrix: */
+	PTransform projectionModelviewDepthProjection=projectionModelview;
+	projectionModelviewDepthProjection*=depthImageRenderer->getDepthProjection();
+	glUniformARB(*(ulPtr++),projectionModelviewDepthProjection);
+	
 	/* Draw the surface: */
-	typedef GLGeometry::Vertex<void,0,void,0,void,float,3> Vertex;
-	GLVertexArrayParts::enable(Vertex::getPartsMask());
-	glVertexPointer(static_cast<const Vertex*>(0));
-	for(unsigned int y=1;y<size[1];++y)
-		glDrawElements(GL_QUAD_STRIP,size[0]*2,GL_UNSIGNED_INT,static_cast<const GLuint*>(0)+(y-1)*size[0]*2);
-	GLVertexArrayParts::disable(Vertex::getPartsMask());
+	depthImageRenderer->renderSurfaceTemplate(contextData);
 	
 	/* Unbind all textures and buffers: */
-	if(waterTable!=0)
+	if(waterTable!=0&&dem==0)
 		{
 		glActiveTextureARB(GL_TEXTURE4_ARB);
 		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
@@ -1127,24 +824,26 @@ void SurfaceRenderer::glRenderSinglePass(GLuint heightColorMapTexture,GLContextD
 		glActiveTextureARB(GL_TEXTURE2_ARB);
 		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
 		}
-	if(useHeightMap)
+	if(dem!=0)
+		{
+		glActiveTextureARB(GL_TEXTURE1_ARB);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
+		}
+	else if(elevationColorMap!=0)
 		{
 		glActiveTextureARB(GL_TEXTURE1_ARB);
 		glBindTexture(GL_TEXTURE_1D,0);
 		}
-	if(!usePreboundDepthTexture)
-		{
-		glActiveTextureARB(GL_TEXTURE0_ARB);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-		}
-	glBindBufferARB(GL_ARRAY_BUFFER_ARB,0);
-	glBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,0);
+	glActiveTextureARB(GL_TEXTURE0_ARB);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
 	
 	/* Unbind the height map shader: */
 	glUseProgramObjectARB(0);
 	}
 
-void SurfaceRenderer::glRenderGlobalAmbientHeightMap(GLuint heightColorMapTexture,GLContextData& contextData) const
+#if 0
+
+void SurfaceRenderer::renderGlobalAmbientHeightMap(GLuint heightColorMapTexture,GLContextData& contextData) const
 	{
 	/* Get the data item: */
 	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
@@ -1257,7 +956,7 @@ void SurfaceRenderer::glRenderGlobalAmbientHeightMap(GLuint heightColorMapTextur
 	glUseProgramObjectARB(0);
 	}
 
-void SurfaceRenderer::glRenderShadowedIlluminatedHeightMap(GLuint heightColorMapTexture,GLuint shadowTexture,const SurfaceRenderer::PTransform& shadowProjection,GLContextData& contextData) const
+void SurfaceRenderer::renderShadowedIlluminatedHeightMap(GLuint heightColorMapTexture,GLuint shadowTexture,const PTransform& shadowProjection,GLContextData& contextData) const
 	{
 	/* Get the data item: */
 	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
@@ -1377,3 +1076,5 @@ void SurfaceRenderer::glRenderShadowedIlluminatedHeightMap(GLuint heightColorMap
 	/* Unbind the shadowed illuminated height map shader: */
 	glUseProgramObjectARB(0);
 	}
+
+#endif

@@ -2,7 +2,7 @@
 FrameFilter - Class to filter streams of depth frames arriving from a
 depth camera, with code to detect unstable values in each pixel, and
 fill holes resulting from invalid samples.
-Copyright (c) 2012-2015 Oliver Kreylos
+Copyright (c) 2012-2016 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -25,9 +25,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 #include <Misc/FunctionCalls.h>
 #include <Geometry/HVector.h>
-#include <Geometry/Plane.h>
 #include <Geometry/Matrix.h>
-#include <Geometry/ProjectiveTransformation.h>
 
 /****************************
 Methods of class FrameFilter:
@@ -56,15 +54,15 @@ void* FrameFilter::filterThreadMethod(void)
 		lastInputFrameVersion=inputFrameVersion;
 		}
 		
-		/* Create a new output frame: */
-		Kinect::FrameBuffer newOutputFrame(size[0],size[1],size[1]*size[0]*sizeof(float));
+		/* Prepare a new output frame: */
+		Kinect::FrameBuffer& newOutputFrame=outputFrames.startNewValue();
 		
 		/* Enter the new frame into the averaging buffer and calculate the output frame's pixel values: */
-		const RawDepth* ifPtr=static_cast<const RawDepth*>(inputFrame.getBuffer());
+		const RawDepth* ifPtr=inputFrame.getData<RawDepth>();
 		RawDepth* abPtr=averagingBuffer+averagingSlotIndex*size[1]*size[0];
 		unsigned int* sPtr=statBuffer;
-		float* ofPtr=validBuffer; // static_cast<const float*>(outputFrame.getBuffer());
-		float* nofPtr=static_cast<float*>(newOutputFrame.getBuffer());
+		float* ofPtr=validBuffer;
+		float* nofPtr=newOutputFrame.getData<float>();
 		const PixelDepthCorrection* pdcPtr=pixelDepthCorrection;
 		for(unsigned int y=0;y<size[1];++y)
 			{
@@ -145,7 +143,7 @@ void* FrameFilter::filterThreadMethod(void)
 		
 		/* Go to the next averaging slot: */
 		if(++averagingSlotIndex==numAveragingSlots)
-			averagingSlotIndex=0;
+			averagingSlotIndex=0U;
 		
 		/* Apply a spatial filter if requested: */
 		if(spatialFilter)
@@ -156,7 +154,7 @@ void* FrameFilter::filterThreadMethod(void)
 				for(unsigned int x=0;x<size[0];++x)
 					{
 					/* Get a pointer to the current column: */
-					float* colPtr=static_cast<float*>(newOutputFrame.getBuffer())+x;
+					float* colPtr=newOutputFrame.getData<float>()+x;
 					
 					/* Filter the first pixel in the column: */
 					float lastVal=*colPtr;
@@ -175,7 +173,7 @@ void* FrameFilter::filterThreadMethod(void)
 					/* Filter the last pixel in the column: */
 					*colPtr=(lastVal+colPtr[0]*2.0f)/3.0f;
 					}
-				float* rowPtr=static_cast<float*>(newOutputFrame.getBuffer());
+				float* rowPtr=newOutputFrame.getData<float>();
 				for(unsigned int y=0;y<size[1];++y)
 					{
 					/* Filter the first pixel in the row: */
@@ -199,19 +197,19 @@ void* FrameFilter::filterThreadMethod(void)
 				}
 			}
 		
+		/* Finalize the new output frame in the output buffer: */
+		outputFrames.postNewValue();
+		
 		/* Pass the new output frame to the registered receiver: */
 		if(outputFrameFunction!=0)
 			(*outputFrameFunction)(newOutputFrame);
-		
-		/* Retain the new output frame: */
-		outputFrame=newOutputFrame;
 		}
 	
 	return 0;
 	}
 
-FrameFilter::FrameFilter(const unsigned int sSize[2],int sNumAveragingSlots,const FrameFilter::PTransform& depthProjection,const FrameFilter::Plane& basePlane)
-	:pixelDepthCorrection(0),
+FrameFilter::FrameFilter(const unsigned int sSize[2],unsigned int sNumAveragingSlots,const FrameFilter::PixelDepthCorrection* sPixelDepthCorrection,const PTransform& depthProjection,const Plane& basePlane)
+	:pixelDepthCorrection(sPixelDepthCorrection),
 	 averagingBuffer(0),
 	 statBuffer(0),
 	 outputFrameFunction(0)
@@ -219,16 +217,6 @@ FrameFilter::FrameFilter(const unsigned int sSize[2],int sNumAveragingSlots,cons
 	/* Remember the frame size: */
 	for(int i=0;i<2;++i)
 		size[i]=sSize[i];
-	
-	/* Initialize the pixel depth correction buffer: */
-	pixelDepthCorrection=new PixelDepthCorrection[size[1]*size[0]];
-	PixelDepthCorrection* pdcPtr=pixelDepthCorrection;
-	for(unsigned int y=0;y<size[1];++y)
-		for(unsigned int x=0;x<size[0];++x,++pdcPtr)
-			{
-			pdcPtr->scale=1.0f;
-			pdcPtr->offset=0.0;
-			}
 	
 	/* Initialize the input frame slot: */
 	inputFrameVersion=0;
@@ -240,11 +228,11 @@ FrameFilter::FrameFilter(const unsigned int sSize[2],int sNumAveragingSlots,cons
 	numAveragingSlots=sNumAveragingSlots;
 	averagingBuffer=new RawDepth[numAveragingSlots*size[1]*size[0]];
 	RawDepth* abPtr=averagingBuffer;
-	for(int i=0;i<numAveragingSlots;++i)
+	for(unsigned int i=0;i<numAveragingSlots;++i)
 		for(unsigned int y=0;y<size[1];++y)
 			for(unsigned int x=0;x<size[0];++x,++abPtr)
 				*abPtr=2048U; // Mark sample as invalid
-	averagingSlotIndex=0;
+	averagingSlotIndex=0U;
 	
 	/* Initialize the statistics buffer: */
 	statBuffer=new unsigned int[size[1]*size[0]*3];
@@ -277,6 +265,10 @@ FrameFilter::FrameFilter(const unsigned int sSize[2],int sNumAveragingSlots,cons
 		for(unsigned int x=0;x<size[0];++x,++vbPtr)
 			*vbPtr=float(-((double(x)+0.5)*basePlaneDic[0]+(double(y)+0.5)*basePlaneDic[1]+basePlaneDic[3])/basePlaneDic[2]);
 	
+	/* Initialize the output frame buffer: */
+	for(int i=0;i<3;++i)
+		outputFrames.getBuffer(i)=Kinect::FrameBuffer(size[0],size[1],size[1]*size[0]*sizeof(float));
+	
 	/* Start the filtering thread: */
 	runFilterThread=true;
 	filterThread.start(this,&FrameFilter::filterThreadMethod);
@@ -293,19 +285,10 @@ FrameFilter::~FrameFilter(void)
 	filterThread.join();
 	
 	/* Release all allocated buffers: */
-	delete[] pixelDepthCorrection;
 	delete[] averagingBuffer;
 	delete[] statBuffer;
 	delete[] validBuffer;
 	delete outputFrameFunction;
-	}
-
-void FrameFilter::setDepthCorrection(const Kinect::FrameSource::DepthCorrection& newDepthCorrection)
-	{
-	delete[] pixelDepthCorrection;
-	
-	/* Evaluate the given depth correction parameters on the depth frame: */
-	pixelDepthCorrection=newDepthCorrection.getPixelCorrection(size);
 	}
 
 void FrameFilter::setValidDepthInterval(unsigned int newMinDepth,unsigned int newMaxDepth)
@@ -321,7 +304,7 @@ void FrameFilter::setValidDepthInterval(unsigned int newMinDepth,unsigned int ne
 	maxPlane[3]=-float(newMaxDepth)-0.5f;
 	}
 
-void FrameFilter::setValidElevationInterval(const FrameFilter::PTransform& depthProjection,const FrameFilter::Plane& basePlane,double newMinElevation,double newMaxElevation)
+void FrameFilter::setValidElevationInterval(const PTransform& depthProjection,const Plane& basePlane,double newMinElevation,double newMaxElevation)
 	{
 	/* Calculate the equations of the minimum and maximum elevation planes in camera space: */
 	PTransform::HVector minPlaneCc(basePlane.getNormal());

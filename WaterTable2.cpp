@@ -2,7 +2,7 @@
 WaterTable2 - Class to simulate water flowing over a surface using
 improved water flow simulation based on Saint-Venant system of partial
 differenctial equations.
-Copyright (c) 2012-2015 Oliver Kreylos
+Copyright (c) 2012-2016 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -24,9 +24,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "WaterTable2.h"
 
 #include <stdarg.h>
+#include <stdio.h>
 #include <string>
 #include <iostream>
-#include <Misc/ThrowStdErr.h>
 #include <Math/Math.h>
 #include <Geometry/AffineCombiner.h>
 #include <Geometry/Vector.h>
@@ -43,7 +43,8 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <GL/GLContextData.h>
 #include <GL/GLTransformationWrappers.h>
 
-#include "SurfaceRenderer.h"
+#include "DepthImageRenderer.h"
+#include "ShaderHelper.h"
 
 namespace {
 
@@ -70,30 +71,6 @@ GLfloat* makeBuffer(int width,int height,int numComponents,...)
 	return buffer;
 	}
 
-GLhandleARB compileVertexShader(const char* shaderFileName)
-	{
-	/* Construct the full shader source file name: */
-	std::string fullShaderFileName=SHADERDIR;
-	fullShaderFileName.push_back('/');
-	fullShaderFileName.append(shaderFileName);
-	fullShaderFileName.append(".vs");
-	
-	/* Compile and return the vertex shader: */
-	return glCompileVertexShaderFromFile(fullShaderFileName.c_str());
-	}
-
-GLhandleARB compileFragmentShader(const char* shaderFileName)
-	{
-	/* Construct the full shader source file name: */
-	std::string fullShaderFileName=SHADERDIR;
-	fullShaderFileName.push_back('/');
-	fullShaderFileName.append(shaderFileName);
-	fullShaderFileName.append(".fs");
-	
-	/* Compile and return the fragment shader: */
-	return glCompileFragmentShaderFromFile(fullShaderFileName.c_str());
-	}
-
 }
 
 /**************************************
@@ -101,28 +78,20 @@ Methods of class WaterTable2::DataItem:
 **************************************/
 
 WaterTable2::DataItem::DataItem(void)
-	:quantityTextureObject(0),derivativeTextureObject(0),quantityStarTextureObject(0),waterTextureObject(0),
+	:currentBathymetry(0),bathymetryVersion(0),currentQuantity(0),
+	 derivativeTextureObject(0),waterTextureObject(0),
 	 bathymetryFramebufferObject(0),derivativeFramebufferObject(0),maxStepSizeFramebufferObject(0),integrationFramebufferObject(0),waterFramebufferObject(0),
-	 bathymetryShader(0),derivativeShader(0),maxStepSizeShader(0),boundaryShader(0),eulerStepShader(0),rungeKuttaStepShader(0),waterAddShader(0),waterShader(0)
+	 bathymetryShader(0),waterAdaptShader(0),derivativeShader(0),maxStepSizeShader(0),boundaryShader(0),eulerStepShader(0),rungeKuttaStepShader(0),waterAddShader(0),waterShader(0)
 	{
 	for(int i=0;i<2;++i)
 		{
 		bathymetryTextureObjects[i]=0;
 		maxStepSizeTextureObjects[i]=0;
 		}
+	for(int i=0;i<3;++i)
+		quantityTextureObjects[i]=0;
 	
-	/* Check for and initialize all required OpenGL extensions: */
-	bool supported=GLARBDrawBuffers::isSupported();
-	supported=supported&&GLARBFragmentShader::isSupported();
-	supported=supported&&GLARBMultitexture::isSupported();
-	supported=supported&&GLARBShaderObjects::isSupported();
-	supported=supported&&GLARBTextureFloat::isSupported();
-	supported=supported&&GLARBTextureRectangle::isSupported();
-	supported=supported&&GLARBTextureRg::isSupported();
-	supported=supported&&GLARBVertexShader::isSupported();
-	supported=supported&&GLEXTFramebufferObject::isSupported();
-	if(!supported)
-		Misc::throwStdErr("WaterTable2: Required functionality not supported by local OpenGL");
+	/* Initialize all required OpenGL extensions: */
 	GLARBDrawBuffers::initExtension();
 	GLARBFragmentShader::initExtension();
 	GLARBMultitexture::initExtension();
@@ -138,10 +107,9 @@ WaterTable2::DataItem::~DataItem(void)
 	{
 	/* Delete all allocated shaders, textures, and buffers: */
 	glDeleteTextures(2,bathymetryTextureObjects);
-	glDeleteTextures(1,&quantityTextureObject);
+	glDeleteTextures(3,quantityTextureObjects);
 	glDeleteTextures(1,&derivativeTextureObject);
 	glDeleteTextures(2,maxStepSizeTextureObjects);
-	glDeleteTextures(1,&quantityStarTextureObject);
 	glDeleteTextures(1,&waterTextureObject);
 	glDeleteFramebuffersEXT(1,&bathymetryFramebufferObject);
 	glDeleteFramebuffersEXT(1,&derivativeFramebufferObject);
@@ -149,6 +117,7 @@ WaterTable2::DataItem::~DataItem(void)
 	glDeleteFramebuffersEXT(1,&integrationFramebufferObject);
 	glDeleteFramebuffersEXT(1,&waterFramebufferObject);
 	glDeleteObjectARB(bathymetryShader);
+	glDeleteObjectARB(waterAdaptShader);
 	glDeleteObjectARB(derivativeShader);
 	glDeleteObjectARB(maxStepSizeShader);
 	glDeleteObjectARB(boundaryShader);
@@ -158,20 +127,73 @@ WaterTable2::DataItem::~DataItem(void)
 	glDeleteObjectARB(waterShader);
 	}
 
-/************************************
-Static elements of class WaterTable2:
-************************************/
-
-const char* WaterTable2::vertexShaderSource="\
-	void main()\n\
-		{\n\
-		/* Use standard vertex position: */\n\
-		gl_Position=ftransform();\n\
-		}\n";
-
 /****************************
 Methods of class WaterTable2:
 ****************************/
+
+void WaterTable2::calcTransformations(void)
+	{
+	/* Calculate the combined modelview and projection matrix to render depth images into the bathymetry grid: */
+	{
+	bathymetryPmv=PTransform::identity;
+	PTransform::Matrix& bpmvm=bathymetryPmv.getMatrix();
+	Scalar hw=Math::div2(cellSize[0]);
+	Scalar left=domain.min[0]+hw;
+	Scalar right=domain.max[0]-hw;
+	Scalar hh=Math::div2(cellSize[1]);
+	Scalar bottom=domain.min[1]+hh;
+	Scalar top=domain.max[1]-hh;
+	Scalar near=-domain.max[2];
+	Scalar far=-domain.min[2];
+	bpmvm(0,0)=Scalar(2)/(right-left);
+	bpmvm(0,3)=-(right+left)/(right-left);
+	bpmvm(1,1)=Scalar(2)/(top-bottom);
+	bpmvm(1,3)=-(top+bottom)/(top-bottom);
+	bpmvm(2,2)=Scalar(-2)/(far-near);
+	bpmvm(2,3)=-(far+near)/(far-near);
+	bathymetryPmv*=baseTransform;
+	}
+	
+	/* Calculate the combined modelview and projection matrix to render water-adding geometry into the water texture: */
+	{
+	waterAddPmv=PTransform::identity;
+	PTransform::Matrix& wapmvm=waterAddPmv.getMatrix();
+	Scalar left=domain.min[0];
+	Scalar right=domain.max[0];
+	Scalar bottom=domain.min[1];
+	Scalar top=domain.max[1];
+	Scalar near=-domain.max[2]*Scalar(5);
+	Scalar far=-domain.min[2];
+	wapmvm(0,0)=Scalar(2)/(right-left);
+	wapmvm(0,3)=-(right+left)/(right-left);
+	wapmvm(1,1)=Scalar(2)/(top-bottom);
+	wapmvm(1,3)=-(top+bottom)/(top-bottom);
+	wapmvm(2,2)=Scalar(-2)/(far-near);
+	wapmvm(2,3)=-(far+near)/(far-near);
+	waterAddPmv*=baseTransform;
+	}
+	
+	/* Convert the water addition matrix to column-major OpenGL format: */
+	GLfloat* wapPtr=waterAddPmvMatrix;
+	for(int j=0;j<4;++j)
+		for(int i=0;i<4;++i,++wapPtr)
+			*wapPtr=GLfloat(waterAddPmv.getMatrix()(i,j));
+	
+	/* Calculate a transformation from camera space into water texture space: */
+	waterTextureTransform=PTransform::identity;
+	PTransform::Matrix& wttm=waterTextureTransform.getMatrix();
+	wttm(0,0)=Scalar(size[0])/(domain.max[0]-domain.min[0]);
+	wttm(0,3)=wttm(0,0)*-domain.min[0];
+	wttm(1,1)=Scalar(size[1])/(domain.max[1]-domain.min[1]);
+	wttm(1,3)=wttm(1,1)*-domain.min[1];
+	waterTextureTransform*=baseTransform;
+	
+	/* Convert the water texture transform to column-major OpenGL format: */
+	GLfloat* wttmPtr=waterTextureTransformMatrix;
+	for(int j=0;j<4;++j)
+		for(int i=0;i<4;++i,++wttmPtr)
+			*wttmPtr=GLfloat(wttm(i,j));
+	}
 
 GLfloat WaterTable2::calcDerivative(WaterTable2::DataItem* dataItem,GLuint quantityTextureObject,bool calcMaxStepSize) const
 	{
@@ -267,13 +289,50 @@ GLfloat WaterTable2::calcDerivative(WaterTable2::DataItem* dataItem,GLuint quant
 	return stepSize;
 	}
 
-WaterTable2::WaterTable2(GLsizei width,GLsizei height,const Plane& basePlane,const Point basePlaneCorners[4])
+WaterTable2::WaterTable2(GLsizei width,GLsizei height,const GLfloat sCellSize[2])
+	:depthImageRenderer(0),
+	 baseTransform(ONTransform::identity),
+	 dryBoundary(true),
+	 readBathymetryRequest(0U),readBathymetryBuffer(0),readBathymetryReply(0U)
+	{
+	/* Initialize the water table size and cell size: */
+	size[0]=width;
+	size[1]=height;
+	for(int i=0;i<2;++i)
+		cellSize[i]=sCellSize[i];
+	
+	/* Calculate a simulation domain: */
+	for(int i=0;i<2;++i)
+		{
+		domain.min[i]=Scalar(0);
+		domain.max[i]=Scalar(size[i])*Scalar(cellSize[i]);
+		}
+	
+	/* Calculate the water table transformations: */
+	calcTransformations();
+	
+	/* Initialize simulation parameters: */
+	theta=1.3f;
+	g=9.81f;
+	epsilon=0.01f*Math::max(Math::max(cellSize[0],cellSize[1]),1.0f);
+	attenuation=127.0f/128.0f; // 31.0f/32.0f;
+	maxStepSize=1.0f;
+	
+	/* Initialize the water deposit amount: */
+	waterDeposit=0.0f;
+	}
+
+WaterTable2::WaterTable2(GLsizei width,GLsizei height,const DepthImageRenderer* sDepthImageRenderer,const Point basePlaneCorners[4])
+	:depthImageRenderer(sDepthImageRenderer),
+	 dryBoundary(true),
+	 readBathymetryRequest(0U),readBathymetryBuffer(0),readBathymetryReply(0U)
 	{
 	/* Initialize the water table size: */
 	size[0]=width;
 	size[1]=height;
 	
 	/* Project the corner points to the base plane and calculate their centroid: */
+	const Plane& basePlane=depthImageRenderer->getBasePlane();
 	Point bpc[4];
 	Point::AffineCombiner centroidC;
 	for(int i=0;i<4;++i)
@@ -287,9 +346,9 @@ WaterTable2::WaterTable2(GLsizei width,GLsizei height,const Plane& basePlane,con
 	typedef Point::Vector Vector;
 	Vector z=basePlane.getNormal();
 	Vector x=(bpc[1]-bpc[0])+(bpc[3]-bpc[2]);
-	Vector y=Geometry::cross(z,x);
-	baseTransform=Transform::translateFromOriginTo(baseCentroid);
-	baseTransform*=Transform::rotate(Transform::Rotation::fromBaseVectors(x,y));
+	Vector y=z^x;
+	baseTransform=ONTransform::translateFromOriginTo(baseCentroid);
+	baseTransform*=ONTransform::rotate(ONTransform::Rotation::fromBaseVectors(x,y));
 	baseTransform.doInvert();
 	
 	/* Calculate the domain of upright elevation model space: */
@@ -304,25 +363,15 @@ WaterTable2::WaterTable2(GLsizei width,GLsizei height,const Plane& basePlane,con
 		cellSize[i]=GLfloat((domain.max[i]-domain.min[i])/Scalar(size[i]));
 	std::cout<<cellSize[0]<<" x "<<cellSize[1]<<std::endl;
 	
+	/* Calculate the water table transformations: */
+	calcTransformations();
+	
 	/* Initialize simulation parameters: */
 	theta=1.3f;
 	g=9.81f;
 	epsilon=0.01f*Math::max(Math::max(cellSize[0],cellSize[1]),1.0f);
 	attenuation=127.0f/128.0f; // 31.0f/32.0f;
 	maxStepSize=1.0f;
-	
-	/* Create a 4x4 matrix expressing the texture transformation: */
-	Geometry::Matrix<double,4,4> stMat(1.0);
-	stMat(0,0)=double(size[0])/(domain.max[0]-domain.min[0]);
-	stMat(0,3)=stMat(0,0)*-domain.min[0];
-	stMat(1,1)=double(size[1])/(domain.max[1]-domain.min[1]);
-	stMat(1,3)=stMat(1,1)*-domain.min[1];
-	Geometry::Matrix<double,4,4> btMat(1.0);
-	baseTransform.writeMatrix(btMat);
-	Geometry::Matrix<double,4,4> texMat=stMat*btMat;
-	for(int i=0;i<4;++i)
-		for(int j=0;j<4;++j)
-			waterTextureMatrix[j*4+i]=texMat(i,j);
 	
 	/* Initialize the water deposit amount: */
 	waterDeposit=0.0f;
@@ -357,15 +406,18 @@ void WaterTable2::initContext(GLContextData& contextData) const
 	}
 	
 	{
-	/* Create the cell-centered quantity state texture: */
-	glGenTextures(1,&dataItem->quantityTextureObject);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObject);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_S,GL_CLAMP);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_T,GL_CLAMP);
+	/* Create the cell-centered quantity state textures: */
+	glGenTextures(3,dataItem->quantityTextureObjects);
 	GLfloat* q=makeBuffer(size[0],size[1],3,double(domain.min[2]),0.0,0.0);
-	glTexImage2D(GL_TEXTURE_RECTANGLE_ARB,0,GL_RGB32F,size[0],size[1],0,GL_RGB,GL_FLOAT,q);
+	for(int i=0;i<3;++i)
+		{
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[i]);
+		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_S,GL_CLAMP);
+		glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_T,GL_CLAMP);
+		glTexImage2D(GL_TEXTURE_RECTANGLE_ARB,0,GL_RGB32F,size[0],size[1],0,GL_RGB,GL_FLOAT,q);
+		}
 	delete[] q;
 	}
 	
@@ -396,19 +448,6 @@ void WaterTable2::initContext(GLContextData& contextData) const
 		glTexImage2D(GL_TEXTURE_RECTANGLE_ARB,0,GL_R32F,size[0],size[1],0,GL_LUMINANCE,GL_FLOAT,mss);
 		}
 	delete[] mss;
-	}
-	
-	{
-	/* Create the cell-centered intermediate quantity state texture: */
-	glGenTextures(1,&dataItem->quantityStarTextureObject);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityStarTextureObject);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_S,GL_CLAMP);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_T,GL_CLAMP);
-	GLfloat* qStar=makeBuffer(size[0],size[1],3,double(domain.min[2]),0.0,0.0);
-	glTexImage2D(GL_TEXTURE_RECTANGLE_ARB,0,GL_RGB32F,size[0],size[1],0,GL_RGB,GL_FLOAT,qStar);
-	delete[] qStar;
 	}
 	
 	{
@@ -473,9 +512,9 @@ void WaterTable2::initContext(GLContextData& contextData) const
 	glGenFramebuffersEXT(1,&dataItem->integrationFramebufferObject);
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->integrationFramebufferObject);
 	
-	/* Attach the intermediate quantity texture to the integration step frame buffer: */
-	glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT,GL_COLOR_ATTACHMENT0_EXT,GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObject,0);
-	glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT,GL_COLOR_ATTACHMENT1_EXT,GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityStarTextureObject,0);
+	/* Attach the quantity textures to the integration step frame buffer: */
+	for(int i=0;i<3;++i)
+		glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT,GL_COLOR_ATTACHMENT0_EXT+i,GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[i],0);
 	glDrawBuffer(GL_NONE);
 	glReadBuffer(GL_NONE);
 	}
@@ -494,6 +533,11 @@ void WaterTable2::initContext(GLContextData& contextData) const
 	/* Restore the previously bound frame buffer: */
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,currentFrameBuffer);
 	
+	/* Create a simple vertex shader to render quads in pixel space: */
+	static const char* vertexShaderSourceTemplate="void main(){gl_Position=vec4(gl_Vertex.x*%f-1.0,gl_Vertex.y*%f-1.0,0.0,1.0);}";
+	char vertexShaderSource[256];
+	snprintf(vertexShaderSource,sizeof(vertexShaderSource),vertexShaderSourceTemplate,2.0/double(size[0]),2.0/double(size[1]));
+	
 	/* Create the bathymetry update shader: */
 	{
 	GLhandleARB vertexShader=glCompileVertexShaderFromString(vertexShaderSource);
@@ -504,6 +548,17 @@ void WaterTable2::initContext(GLContextData& contextData) const
 	dataItem->bathymetryShaderUniformLocations[0]=glGetUniformLocationARB(dataItem->bathymetryShader,"oldBathymetrySampler");
 	dataItem->bathymetryShaderUniformLocations[1]=glGetUniformLocationARB(dataItem->bathymetryShader,"newBathymetrySampler");
 	dataItem->bathymetryShaderUniformLocations[2]=glGetUniformLocationARB(dataItem->bathymetryShader,"quantitySampler");
+	}
+	
+	/* Create the water adaptation shader: */
+	{
+	GLhandleARB vertexShader=glCompileVertexShaderFromString(vertexShaderSource);
+	GLhandleARB fragmentShader=compileFragmentShader("Water2WaterAdaptShader");
+	dataItem->waterAdaptShader=glLinkShader(vertexShader,fragmentShader);
+	glDeleteObjectARB(vertexShader);
+	glDeleteObjectARB(fragmentShader);
+	dataItem->waterAdaptShaderUniformLocations[0]=glGetUniformLocationARB(dataItem->waterAdaptShader,"bathymetrySampler");
+	dataItem->waterAdaptShaderUniformLocations[1]=glGetUniformLocationARB(dataItem->waterAdaptShader,"newQuantitySampler");
 	}
 	
 	/* Create the temporal derivative computation shader: */
@@ -576,8 +631,9 @@ void WaterTable2::initContext(GLContextData& contextData) const
 	dataItem->waterAddShader=glLinkShader(vertexShader,fragmentShader);
 	glDeleteObjectARB(vertexShader);
 	glDeleteObjectARB(fragmentShader);
-	dataItem->waterAddShaderUniformLocations[0]=glGetUniformLocationARB(dataItem->waterAddShader,"stepSize");
-	dataItem->waterAddShaderUniformLocations[1]=glGetUniformLocationARB(dataItem->waterAddShader,"waterSampler");
+	dataItem->waterAddShaderUniformLocations[0]=glGetUniformLocationARB(dataItem->waterAddShader,"pmv");
+	dataItem->waterAddShaderUniformLocations[1]=glGetUniformLocationARB(dataItem->waterAddShader,"stepSize");
+	dataItem->waterAddShaderUniformLocations[2]=glGetUniformLocationARB(dataItem->waterAddShader,"waterSampler");
 	}
 	
 	/* Create the water shader: */
@@ -591,134 +647,16 @@ void WaterTable2::initContext(GLContextData& contextData) const
 	dataItem->waterShaderUniformLocations[1]=glGetUniformLocationARB(dataItem->waterShader,"quantitySampler");
 	dataItem->waterShaderUniformLocations[2]=glGetUniformLocationARB(dataItem->waterShader,"waterSampler");
 	}
-	
-	/*********************************************************************
-	Initialize simulation state:
-	*********************************************************************/
-	
-	#if 0
-	
-	/* Create the bathymetry texture: */
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[0]);
-	GLfloat* b=new GLfloat[(size[1]-1)*(size[0]-1)];
-	GLfloat* bPtr=b;
-	for(int y=0;y<size[1]-1;++y)
-		for(int x=0;x<size[0]-1;++x,++bPtr)
-			{
-			#if 0
-			
-			/* Flat bathymetry: */
-			*bPtr=domain.min[2];
-			
-			#elif 0
-			
-			/* Swimming pool: */
-			if(x>0&&x<size[0]-2&&y>0&&y<size[1]-2)
-				{
-				/* Gaussian blob island: */
-				GLfloat cx=GLfloat(size[0])*0.5f;
-				GLfloat cy=GLfloat(size[1])*0.5f;
-				GLfloat arg=Math::exp(-(Math::sqr(GLfloat(x)-cx)+Math::sqr(GLfloat(y)-cy))/Math::sqr(20.0f))*15.0f;
-				*bPtr=arg;
-				}
-			else
-				*bPtr=25.0f;
-			
-			#elif 0
-			
-			/* Gaussian blob island: */
-			GLfloat cx=GLfloat(size[0])*0.5f;
-			GLfloat cy=GLfloat(size[1])*0.5f;
-			GLfloat arg=Math::exp(-(Math::sqr(GLfloat(x)-cx)+Math::sqr(GLfloat(y)-cy))/Math::sqr(20.0f))*25.0f;
-			*bPtr=arg;
-			
-			#else
-			
-			/* Reservoir with outflow channel: */
-			if(x==0||x==size[0]-2||y==0||y==size[1]-2)
-				*bPtr=50.0f;
-			else if(x>=5&&x<=size[0]-7&&y>=5&&y<size[1]/4)
-				*bPtr=0.0f;
-			else if(x>=size[0]/2-15&&x<size[0]/2+35&&y>=size[1]/4+5)
-				*bPtr=0.0f;
-			else if(y>=size[1]/4+5)
-				*bPtr=5.0f;
-			else if(x>=size[0]/2-10&&x<size[0]/2+30&&y>=5)
-				*bPtr=0.0f;
-			else
-				*bPtr=50.0f;
-			
-			#endif
-			}
-	glTexSubImage2D(GL_TEXTURE_RECTANGLE_ARB,0,0,0,size[0]+1,size[1]+1,GL_LUMINANCE,GL_FLOAT,b);
-	
-	/* Create the initial quantity state texture: */
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObject);
-	GLfloat cx=GLfloat(size[0])*0.25f;
-	GLfloat cy=GLfloat(size[1])*0.333f;
-	GLfloat* q=new GLfloat[size[1]*size[0]*3];
-	GLfloat* qPtr=q;
-	GLfloat* bRowPtr=b;
-	for(int y=0;y<size[1];++y,bRowPtr+=size[0]+1)
-		{
-		GLfloat* bPtr=bRowPtr;
-		for(int x=0;x<size[0];++x,qPtr+=3,++bPtr)
-			{
-			#if 1
-			
-			/* Dam failure: */
-			if(y<size[1]/4)
-				qPtr[0]=40.0f;
-			else
-				qPtr[0]=0.0f;
-			
-			#elif 0
-			
-			/* Gaussian water blob: */
-			GLfloat arg=Math::exp(-(Math::sqr(GLfloat(x)-cx)+Math::sqr(GLfloat(y)-cy))/Math::sqr(16.0f))*40.0f+10.0f;
-			qPtr[0]=arg;
-			
-			#elif 0
-			
-			/* Rectangular water blob: */
-			if(x>=size[0]/4-10&&x<size[0]/4+10&&y>=size[1]/3-10&&y<size[1]/3+10)
-				qPtr[0]=40.0f;
-			else
-				qPtr[0]=0.0f;
-			
-			#else
-			
-			/* Flat surface: */
-			qPtr[0]=domain.min[2];
-			
-			#endif
-			
-			/* Check water surface height against bathymetry height: */
-			int left=x>0?-1:0;
-			int down=y>0?-(size[0]-1):0;
-			GLfloat b=Math::mid(Math::mid(bPtr[down+left],bPtr[down]),Math::mid(bPtr[left],bPtr[0]));
-			if(qPtr[0]<b)
-				qPtr[0]=b;
-			
-			qPtr[1]=qPtr[2]=0.0f;
-			}
-		}
-	glTexSubImage2D(GL_TEXTURE_RECTANGLE_ARB,0,0,0,size[0],size[1],GL_RGB,GL_FLOAT,q);
-	
-	delete[] b;
-	delete[] q;
-	
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-	
-	#endif
-	
-	dataItem->currentBathymetry=0;
 	}
 
-void WaterTable2::setElevationRange(WaterTable2::Scalar newMin,WaterTable2::Scalar newMax)
+void WaterTable2::setElevationRange(Scalar newMin,Scalar newMax)
 	{
+	/* Set the new elevation range: */
 	domain.min[2]=newMin;
 	domain.max[2]=newMax;
+	
+	/* Recalculate the water table transformations: */
+	calcTransformations();
 	}
 
 void WaterTable2::setAttenuation(GLfloat newAttenuation)
@@ -754,42 +692,104 @@ void WaterTable2::setWaterDeposit(GLfloat newWaterDeposit)
 	waterDeposit=newWaterDeposit;
 	}
 
-void WaterTable2::updateBathymetry(const SurfaceRenderer& bathymetryRenderer,GLContextData& contextData) const
+void WaterTable2::setDryBoundary(bool newDryBoundary)
+	{
+	dryBoundary=newDryBoundary;
+	}
+
+void WaterTable2::updateBathymetry(GLContextData& contextData) const
 	{
 	/* Get the data item: */
 	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
 	
-	/* Save relevant OpenGL state: */
+	/* Check if the current bathymetry texture is outdated: */
+	if(dataItem->bathymetryVersion!=depthImageRenderer->getDepthImageVersion())
+		{
+		/* Save relevant OpenGL state: */
+		glPushAttrib(GL_VIEWPORT_BIT);
+		GLint currentFrameBuffer;
+		glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT,&currentFrameBuffer);
+		GLfloat currentClearColor[4];
+		glGetFloatv(GL_COLOR_CLEAR_VALUE,currentClearColor);
+		
+		/* Bind the bathymetry rendering frame buffer and clear it: */
+		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->bathymetryFramebufferObject);
+		glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT+(1-dataItem->currentBathymetry));
+		glViewport(0,0,size[0]-1,size[1]-1);
+		glClearColor(GLfloat(domain.min[2]),0.0f,0.0f,1.0f);
+		glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+		
+		/* Render the surface into the bathymetry grid: */
+		depthImageRenderer->renderElevation(bathymetryPmv,contextData);
+		
+		/* Set up the integration frame buffer to update the conserved quantities based on bathymetry changes: */
+		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->integrationFramebufferObject);
+		glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT+(1-dataItem->currentQuantity));
+		glViewport(0,0,size[0],size[1]);
+		
+		/* Set up the bathymetry update shader: */
+		glUseProgramObjectARB(dataItem->bathymetryShader);
+		glActiveTextureARB(GL_TEXTURE0_ARB);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[dataItem->currentBathymetry]);
+		glUniform1iARB(dataItem->bathymetryShaderUniformLocations[0],0);
+		glActiveTextureARB(GL_TEXTURE1_ARB);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[1-dataItem->currentBathymetry]);
+		glUniform1iARB(dataItem->bathymetryShaderUniformLocations[1],1);
+		
+		/* Check if the current bathymetry grid was requested: */
+		if(readBathymetryReply!=readBathymetryRequest)
+			{
+			/* Read back the bathymetry grid into the supplied buffer: */
+			glGetTexImage(GL_TEXTURE_RECTANGLE_ARB,0,GL_RED,GL_FLOAT,readBathymetryBuffer);
+			
+			/* Finish the request: */
+			readBathymetryReply=readBathymetryRequest;
+			}
+		
+		glActiveTextureARB(GL_TEXTURE2_ARB);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[dataItem->currentQuantity]);
+		glUniform1iARB(dataItem->bathymetryShaderUniformLocations[2],2);
+		
+		/* Run the bathymetry update: */
+		glBegin(GL_QUADS);
+		glVertex2i(0,0);
+		glVertex2i(size[0],0);
+		glVertex2i(size[0],size[1]);
+		glVertex2i(0,size[1]);
+		glEnd();
+		
+		/* Unbind all shaders and textures: */
+		glUseProgramObjectARB(0);
+		glActiveTextureARB(GL_TEXTURE2_ARB);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
+		glActiveTextureARB(GL_TEXTURE1_ARB);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
+		glActiveTextureARB(GL_TEXTURE0_ARB);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
+		
+		/* Restore OpenGL state: */
+		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,currentFrameBuffer);
+		glClearColor(currentClearColor[0],currentClearColor[1],currentClearColor[2],currentClearColor[3]);
+		glPopAttrib();
+		
+		/* Update the bathymetry and quantity grids: */
+		dataItem->currentBathymetry=1-dataItem->currentBathymetry;
+		dataItem->bathymetryVersion=depthImageRenderer->getDepthImageVersion();
+		dataItem->currentQuantity=1-dataItem->currentQuantity;
+		}
+	}
+
+void WaterTable2::updateBathymetry(const GLfloat* bathymetryGrid,GLContextData& contextData) const
+	{
+	/* Get the data item: */
+	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
+	
+	/* Set up the integration frame buffer to update the conserved quantities based on bathymetry changes: */
 	glPushAttrib(GL_VIEWPORT_BIT);
 	GLint currentFrameBuffer;
 	glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT,&currentFrameBuffer);
-	GLfloat currentClearColor[4];
-	glGetFloatv(GL_COLOR_CLEAR_VALUE,currentClearColor);
-	
-	/* Bind the bathymetry rendering frame buffer and clear it: */
-	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->bathymetryFramebufferObject);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT+(1-dataItem->currentBathymetry));
-	glViewport(0,0,size[0]-1,size[1]-1);
-	glClearColor(GLfloat(domain.min[2]),0.0f,0.0f,1.0f);
-	glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-	
-	/* Set the transformation from camera space to upright elevation model space: */
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-	Scalar hw=Math::div2(cellSize[0]);
-	Scalar hh=Math::div2(cellSize[1]);
-	glOrtho(domain.min[0]+hw,domain.max[0]-hw,domain.min[1]+hh,domain.max[1]-hh,-domain.max[2],-domain.min[2]);
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadMatrix(baseTransform);
-	
-	/* Render the surface: */
-	bathymetryRenderer.glRenderElevation(contextData);
-	
-	/* Set up the integration frame buffer to update the conserved quantities based on bathymetry changes: */
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->integrationFramebufferObject);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT+(1-dataItem->currentQuantity));
 	glViewport(0,0,size[0],size[1]);
 	
 	/* Set up the bathymetry update shader: */
@@ -797,48 +797,96 @@ void WaterTable2::updateBathymetry(const SurfaceRenderer& bathymetryRenderer,GLC
 	glActiveTextureARB(GL_TEXTURE0_ARB);
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[dataItem->currentBathymetry]);
 	glUniform1iARB(dataItem->bathymetryShaderUniformLocations[0],0);
+	
+	/* Upload the new bathymetry grid: */
 	glActiveTextureARB(GL_TEXTURE1_ARB);
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[1-dataItem->currentBathymetry]);
 	glUniform1iARB(dataItem->bathymetryShaderUniformLocations[1],1);
+	glTexSubImage2D(GL_TEXTURE_RECTANGLE_ARB,0,0,0,size[0]-1,size[1]-1,GL_LUMINANCE,GL_FLOAT,bathymetryGrid);
+	
 	glActiveTextureARB(GL_TEXTURE2_ARB);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObject);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[dataItem->currentQuantity]);
 	glUniform1iARB(dataItem->bathymetryShaderUniformLocations[2],2);
 	
 	/* Run the bathymetry update: */
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
 	glBegin(GL_QUADS);
-	glVertex2i(-1,-1);
-	glVertex2i( 1,-1);
-	glVertex2i( 1, 1);
-	glVertex2i(-1, 1);
+	glVertex2i(0,0);
+	glVertex2i(size[0],0);
+	glVertex2i(size[0],size[1]);
+	glVertex2i(0,size[1]);
 	glEnd();
 	
 	/* Unbind all shaders and textures: */
-	glUseProgramObjectARB(0);
 	glActiveTextureARB(GL_TEXTURE2_ARB);
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
 	glActiveTextureARB(GL_TEXTURE1_ARB);
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
 	glActiveTextureARB(GL_TEXTURE0_ARB);
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-	
+	glUseProgramObjectARB(0);
+
 	/* Restore OpenGL state: */
-	glMatrixMode(GL_PROJECTION);
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,currentFrameBuffer);
-	glClearColor(currentClearColor[0],currentClearColor[1],currentClearColor[2],currentClearColor[3]);
 	glPopAttrib();
-	
-	/* Update the bathymetry grid: */
+
+	/* Update the bathymetry and quantity grids: */
 	dataItem->currentBathymetry=1-dataItem->currentBathymetry;
+	dataItem->currentQuantity=1-dataItem->currentQuantity;
 	}
 
-GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
+void WaterTable2::setWaterLevel(const GLfloat* waterGrid,GLContextData& contextData) const
+	{
+	/* Get the data item: */
+	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
+	
+	/* Set up the integration frame buffer to adapt the new water level to the current bathymetry: */
+	glPushAttrib(GL_VIEWPORT_BIT);
+	GLint currentFrameBuffer;
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT,&currentFrameBuffer);
+	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->integrationFramebufferObject);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT+(1-dataItem->currentQuantity));
+	glViewport(0,0,size[0],size[1]);
+	
+	/* Bind the water adaptation shader: */
+	glUseProgramObjectARB(dataItem->waterAdaptShader);
+	
+	/* Bind the current bathymetry texture: */
+	glActiveTextureARB(GL_TEXTURE0_ARB);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[dataItem->currentBathymetry]);
+	glUniform1iARB(dataItem->waterAdaptShaderUniformLocations[0],0);
+	
+	/* Bind the current quantity texture: */
+	glActiveTextureARB(GL_TEXTURE1_ARB);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[dataItem->currentQuantity]);
+	glUniform1iARB(dataItem->waterAdaptShaderUniformLocations[1],1);
+	
+	/* Upload the new water level texture: */
+	glTexSubImage2D(GL_TEXTURE_RECTANGLE_ARB,0,0,0,size[0],size[1],GL_RED,GL_FLOAT,waterGrid);
+	
+	/* Run the water adaptation shader: */
+	glBegin(GL_QUADS);
+	glVertex2i(0,0);
+	glVertex2i(size[0],0);
+	glVertex2i(size[0],size[1]);
+	glVertex2i(0,size[1]);
+	glEnd();
+	
+	/* Unbind all shaders and textures: */
+	glActiveTextureARB(GL_TEXTURE1_ARB);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
+	glActiveTextureARB(GL_TEXTURE0_ARB);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
+	glUseProgramObjectARB(0);
+
+	/* Restore OpenGL state: */
+	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,currentFrameBuffer);
+	glPopAttrib();
+
+	/* Update the quantity grid: */
+	dataItem->currentQuantity=1-dataItem->currentQuantity;
+	}
+
+GLfloat WaterTable2::runSimulationStep(bool forceStepSize,GLContextData& contextData) const
 	{
 	/* Get the data item: */
 	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
@@ -848,20 +896,11 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	GLint currentFrameBuffer;
 	glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT,&currentFrameBuffer);
 	
-	/* Save and reset OpenGL matrices: */
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-	glOrtho(0.0,double(size[0]),0.0,double(size[1]),-1.0,1.0); // Set projection matrix for pixel-coordinate rendering
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadIdentity();
-	
 	/*********************************************************************
 	Step 1: Calculate temporal derivative of most recent quantities.
 	*********************************************************************/
 	
-	GLfloat stepSize=calcDerivative(dataItem,dataItem->quantityTextureObject,true);
+	GLfloat stepSize=calcDerivative(dataItem,dataItem->quantityTextureObjects[dataItem->currentQuantity],!forceStepSize);
 	
 	/*********************************************************************
 	Step 2: Perform the tentative Euler integration step.
@@ -869,7 +908,7 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	
 	/* Set up the Euler step integration frame buffer: */
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->integrationFramebufferObject);
-	glDrawBuffer(GL_COLOR_ATTACHMENT1_EXT);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT+2);
 	glViewport(0,0,size[0],size[1]);
 	
 	/* Set up the Euler integration step shader: */
@@ -877,32 +916,25 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	glUniformARB(dataItem->eulerStepShaderUniformLocations[0],stepSize);
 	glUniformARB(dataItem->eulerStepShaderUniformLocations[1],Math::pow(attenuation,stepSize));
 	glActiveTextureARB(GL_TEXTURE0_ARB);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObject);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[dataItem->currentQuantity]);
 	glUniform1iARB(dataItem->eulerStepShaderUniformLocations[2],0);
 	glActiveTextureARB(GL_TEXTURE1_ARB);
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->derivativeTextureObject);
 	glUniform1iARB(dataItem->eulerStepShaderUniformLocations[3],1);
 	
-	/* Run the Euler integration step on the interior pixels: */
+	/* Run the Euler integration step: */
 	glBegin(GL_QUADS);
-	#if 0
-	glVertex2i(1,1);
-	glVertex2i(size[0]-1,1);
-	glVertex2i(size[0]-1,size[1]-1);
-	glVertex2i(1,size[1]-1);
-	#else
 	glVertex2i(0,0);
 	glVertex2i(size[0],0);
 	glVertex2i(size[0],size[1]);
 	glVertex2i(0,size[1]);
-	#endif
 	glEnd();
 	
 	/*********************************************************************
 	Step 3: Calculate temporal derivative of intermediate quantities.
 	*********************************************************************/
 	
-	calcDerivative(dataItem,dataItem->quantityStarTextureObject,false);
+	calcDerivative(dataItem,dataItem->quantityTextureObjects[2],false);
 	
 	/*********************************************************************
 	Step 4: Perform the final Runge-Kutta integration step.
@@ -910,7 +942,7 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	
 	/* Set up the Runge-Kutta step integration frame buffer: */
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->integrationFramebufferObject);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT+(1-dataItem->currentQuantity));
 	glViewport(0,0,size[0],size[1]);
 	
 	/* Set up the Runge-Kutta integration step shader: */
@@ -918,45 +950,44 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	glUniformARB(dataItem->rungeKuttaStepShaderUniformLocations[0],stepSize);
 	glUniformARB(dataItem->rungeKuttaStepShaderUniformLocations[1],Math::pow(attenuation,stepSize));
 	glActiveTextureARB(GL_TEXTURE0_ARB);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObject);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[dataItem->currentQuantity]);
 	glUniform1iARB(dataItem->rungeKuttaStepShaderUniformLocations[2],0);
 	glActiveTextureARB(GL_TEXTURE1_ARB);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityStarTextureObject);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[2]);
 	glUniform1iARB(dataItem->rungeKuttaStepShaderUniformLocations[3],1);
 	glActiveTextureARB(GL_TEXTURE2_ARB);
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->derivativeTextureObject);
 	glUniform1iARB(dataItem->rungeKuttaStepShaderUniformLocations[4],2);
 	
-	/* Run the Runge-Kutta integration step on the interior pixels: */
+	/* Run the Runge-Kutta integration step: */
 	glBegin(GL_QUADS);
-	#if 0
-	glVertex2i(1,1);
-	glVertex2i(size[0]-1,1);
-	glVertex2i(size[0]-1,size[1]-1);
-	glVertex2i(1,size[1]-1);
-	#else
 	glVertex2i(0,0);
 	glVertex2i(size[0],0);
 	glVertex2i(size[0],size[1]);
 	glVertex2i(0,size[1]);
-	#endif
 	glEnd();
 	
-	/* Set up the boundary condition shader to enforce dry boundaries: */
-	glUseProgramObjectARB(dataItem->boundaryShader);
-	glActiveTextureARB(GL_TEXTURE0_ARB);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[dataItem->currentBathymetry]);
-	glUniform1iARB(dataItem->boundaryShaderUniformLocations[0],0);
+	if(dryBoundary)
+		{
+		/* Set up the boundary condition shader to enforce dry boundaries: */
+		glUseProgramObjectARB(dataItem->boundaryShader);
+		glActiveTextureARB(GL_TEXTURE0_ARB);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[dataItem->currentBathymetry]);
+		glUniform1iARB(dataItem->boundaryShaderUniformLocations[0],0);
+		
+		/* Run the boundary condition shader on the outermost layer of pixels: */
+		//glColorMask(GL_TRUE,GL_FALSE,GL_FALSE,GL_FALSE);
+		glBegin(GL_LINE_LOOP);
+		glVertex2f(0.5f,0.5f);
+		glVertex2f(GLfloat(size[0])-0.5f,0.5f);
+		glVertex2f(GLfloat(size[0])-0.5f,GLfloat(size[1])-0.5f);
+		glVertex2f(0.5f,GLfloat(size[1])-0.5f);
+		glEnd();
+		//glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+		}
 	
-	/* Run the boundary condition shader on the outermost layer of pixels: */
-	//glColorMask(GL_TRUE,GL_FALSE,GL_FALSE,GL_FALSE);
-	glBegin(GL_LINE_LOOP);
-	glVertex2f(0.5f,0.5f);
-	glVertex2f(GLfloat(size[0])-0.5f,0.5f);
-	glVertex2f(GLfloat(size[0])-0.5f,GLfloat(size[1])-0.5f);
-	glVertex2f(0.5f,GLfloat(size[1])-0.5f);
-	glEnd();
-	//glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+	/* Update the current quantities: */
+	dataItem->currentQuantity=1-dataItem->currentQuantity;
 	
 	if(waterDeposit!=0.0f||!renderFunctions.empty())
 		{
@@ -981,19 +1012,13 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 		
 		/* Set up the water adding shader: */
 		glUseProgramObjectARB(dataItem->waterAddShader);
-		glUniform1fARB(dataItem->waterAddShaderUniformLocations[0],stepSize);
+		glUniformMatrix4fvARB(dataItem->waterAddShaderUniformLocations[0],1,GL_FALSE,waterAddPmvMatrix);
+		glUniform1fARB(dataItem->waterAddShaderUniformLocations[1],stepSize);
 		
 		/* Bind the water texture: */
 		glActiveTextureARB(GL_TEXTURE0_ARB);
 		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->waterTextureObject);
-		glUniform1iARB(dataItem->waterAddShaderUniformLocations[1],0);
-		
-		/* Set modelview and projection matrices to render from camera coordinates into the water table texture: */
-		glMatrixMode(GL_PROJECTION);
-		glLoadIdentity();
-		glOrtho(domain.min[0],domain.max[0],domain.min[1],domain.max[1],-domain.max[2],-domain.min[2]);
-		glMatrixMode(GL_MODELVIEW);
-		glLoadMatrix(baseTransform);
+		glUniform1iARB(dataItem->waterAddShaderUniformLocations[2],0);
 		
 		/* Call all render functions: */
 		for(std::vector<const AddWaterFunction*>::const_iterator rfIt=renderFunctions.begin();rfIt!=renderFunctions.end();++rfIt)
@@ -1009,7 +1034,7 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 		
 		/* Set up the integration frame buffer to update the conserved quantities based on the water texture: */
 		glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,dataItem->integrationFramebufferObject);
-		glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);
+		glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT+(1-dataItem->currentQuantity));
 		glViewport(0,0,size[0],size[1]);
 		
 		/* Set up the water update shader: */
@@ -1018,23 +1043,22 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->bathymetryTextureObjects[dataItem->currentBathymetry]);
 		glUniform1iARB(dataItem->waterShaderUniformLocations[0],0);
 		glActiveTextureARB(GL_TEXTURE1_ARB);
-		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObject);
+		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[dataItem->currentQuantity]);
 		glUniform1iARB(dataItem->waterShaderUniformLocations[1],1);
 		glActiveTextureARB(GL_TEXTURE2_ARB);
 		glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->waterTextureObject);
 		glUniform1iARB(dataItem->waterShaderUniformLocations[2],2);
 		
 		/* Run the water update: */
-		glMatrixMode(GL_PROJECTION);
-		glLoadIdentity();
-		glMatrixMode(GL_MODELVIEW);
-		glLoadIdentity();
 		glBegin(GL_QUADS);
-		glVertex2i(-1,-1);
-		glVertex2i( 1,-1);
-		glVertex2i( 1, 1);
-		glVertex2i(-1, 1);
+		glVertex2i(0,0);
+		glVertex2i(size[0],0);
+		glVertex2i(size[0],size[1]);
+		glVertex2i(0,size[1]);
 		glEnd();
+		
+		/* Update the current quantities: */
+		dataItem->currentQuantity=1-dataItem->currentQuantity;
 		}
 	
 	/* Unbind all shaders and textures: */
@@ -1045,12 +1069,6 @@ GLfloat WaterTable2::runSimulationStep(GLContextData& contextData) const
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
 	glActiveTextureARB(GL_TEXTURE0_ARB);
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-	
-	/* Restore OpenGL matrices: */
-	glMatrixMode(GL_PROJECTION);
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
 	
 	/* Restore OpenGL state: */
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,currentFrameBuffer);
@@ -1075,5 +1093,26 @@ void WaterTable2::bindQuantityTexture(GLContextData& contextData) const
 	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
 	
 	/* Bind the conserved quantities texture: */
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObject);
+	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->quantityTextureObjects[dataItem->currentQuantity]);
+	}
+
+void WaterTable2::uploadWaterTextureTransform(GLint location) const
+	{
+	/* Upload the matrix to OpenGL: */
+	glUniformMatrix4fvARB(location,1,GL_FALSE,waterTextureTransformMatrix);
+	}
+
+bool WaterTable2::requestBathymetry(GLfloat* newReadBathymetryBuffer)
+	{
+	/* Check if the previous bathymetry request has been fulfilled: */
+	if(readBathymetryReply==readBathymetryRequest)
+		{
+		/* Set up the new bathymetry request: */
+		++readBathymetryRequest;
+		readBathymetryBuffer=newReadBathymetryBuffer;
+		
+		return true;
+		}
+	else
+		return false;
 	}

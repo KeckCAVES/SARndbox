@@ -1,7 +1,7 @@
 /***********************************************************************
 CalibrateProjector - Utility to calculate the calibration transformation
 of a projector into a Kinect-captured 3D space.
-Copyright (c) 2012-2013 Oliver Kreylos
+Copyright (c) 2012-2015 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -27,7 +27,6 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <Threads/Mutex.h>
 #include <Threads/Cond.h>
 #include <Threads/TripleBuffer.h>
-#include <USB/Context.h>
 #include <Math/Matrix.h>
 #include <Geometry/Point.h>
 #include <Geometry/AffineCombiner.h>
@@ -176,7 +175,6 @@ class CalibrateProjector:public Vrui::Application,public GLObject
 	unsigned int numTiePointFrames; // Number of frames to capture per tie point
 	unsigned int numBackgroundFrames; // Number of frames to capture for background removal
 	int blobMergeDepth; // Maximum depth difference between neighboring pixels in the same blob
-	USB::Context usbContext; // USB device context
 	Kinect::Camera* camera; // Pointer to Kinect camera defining the object space
 	unsigned int frameSize[2]; // Size of the Kinect camera's depth frames in pixels
 	PixelDepthCorrection* pixelDepthCorrection; // Buffer of per-pixel depth correction coefficients
@@ -199,9 +197,11 @@ class CalibrateProjector:public Vrui::Application,public GLObject
 	bool haveProjection; // Flag if a projection matrix has been computed
 	Math::Matrix projection; // The current projection matrix
 	
+	std::string projectionMatrixFileName; // Name of the file to which the projection matrix is saved
+	
 	/* Private methods: */
 	void depthStreamingCallback(const Kinect::FrameBuffer& frameBuffer); // Callback receiving depth frames from the Kinect camera
-	void backgroundCaptureCompleteCallback(Kinect::Camera& camera); // Callback when the Kinect camera is done capturing a background image
+	void backgroundCaptureCompleteCallback(Kinect::DirectFrameSource& camera); // Callback when the Kinect camera is done capturing a background image
 	
 	/* Constructors and destructors: */
 	public:

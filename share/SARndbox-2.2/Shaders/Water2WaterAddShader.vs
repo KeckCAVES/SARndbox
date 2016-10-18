@@ -1,7 +1,6 @@
 /***********************************************************************
-SurfaceElevationShader - Shader to render the elevation of a surface
-relative to a plane.
-Copyright (c) 2012 Oliver Kreylos
+Water2WaterAddShader - Shader to render water-adding objects.
+Copyright (c) 2012-2014 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -20,10 +19,18 @@ with the Augmented Reality Sandbox; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 ***********************************************************************/
 
-varying float elevation; // Elevation relative to base plane
+uniform mat4 pmv; // Combined transformation from camera space to clip space
+uniform float stepSize;
+
+attribute float waterAmount;
+
+varying float scaledWaterAmount;
 
 void main()
 	{
-	/* Write the elevation directly into the frame buffer: */
-	gl_FragColor=vec4(elevation,0.0,0.0,1.0);
+	/* Use the vertex attribute and the step size uniform to calculate the amount of water to add/remove: */
+	scaledWaterAmount=waterAmount*stepSize;
+	
+	/* Use the standard vertex transform: */
+	gl_Position=pmv*gl_Vertex;
 	}
