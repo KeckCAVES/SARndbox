@@ -817,20 +817,33 @@ void HandExtractor::extractHands(const HandExtractor::DepthPixel* depthFrame,Han
 						
 						/* Calculate the hand's average depth in depth-corrected depth image space: */
 						depth=0.0f;
-						ptrdiff_t t0Off=t0.y*depthFrameSize[0]+t0.x;
-						depth+=pixelDepthCorrection[t0Off].correct(float(depthFrame[t0Off]));
-						ptrdiff_t n1Off=n1.y*depthFrameSize[0]+n1.x;
-						depth+=pixelDepthCorrection[n1Off].correct(float(depthFrame[n1Off]));
-						ptrdiff_t t1Off=t1.y*depthFrameSize[0]+t1.x;
-						depth+=pixelDepthCorrection[t1Off].correct(float(depthFrame[t1Off]));
-						ptrdiff_t n2Off=n2.y*depthFrameSize[0]+n2.x;
-						depth+=pixelDepthCorrection[n2Off].correct(float(depthFrame[n2Off]));
-						ptrdiff_t t2Off=t2.y*depthFrameSize[0]+t2.x;
-						depth+=pixelDepthCorrection[t2Off].correct(float(depthFrame[t2Off]));
-						ptrdiff_t n3Off=n3.y*depthFrameSize[0]+n3.x;
-						depth+=pixelDepthCorrection[n3Off].correct(float(depthFrame[n3Off]));
-						ptrdiff_t t3Off=t3.y*depthFrameSize[0]+t3.x;
-						depth+=pixelDepthCorrection[t3Off].correct(float(depthFrame[t3Off]));
+						if(pixelDepthCorrection!=0)
+							{
+							ptrdiff_t t0Off=t0.y*depthFrameSize[0]+t0.x;
+							depth+=pixelDepthCorrection[t0Off].correct(float(depthFrame[t0Off]));
+							ptrdiff_t n1Off=n1.y*depthFrameSize[0]+n1.x;
+							depth+=pixelDepthCorrection[n1Off].correct(float(depthFrame[n1Off]));
+							ptrdiff_t t1Off=t1.y*depthFrameSize[0]+t1.x;
+							depth+=pixelDepthCorrection[t1Off].correct(float(depthFrame[t1Off]));
+							ptrdiff_t n2Off=n2.y*depthFrameSize[0]+n2.x;
+							depth+=pixelDepthCorrection[n2Off].correct(float(depthFrame[n2Off]));
+							ptrdiff_t t2Off=t2.y*depthFrameSize[0]+t2.x;
+							depth+=pixelDepthCorrection[t2Off].correct(float(depthFrame[t2Off]));
+							ptrdiff_t n3Off=n3.y*depthFrameSize[0]+n3.x;
+							depth+=pixelDepthCorrection[n3Off].correct(float(depthFrame[n3Off]));
+							ptrdiff_t t3Off=t3.y*depthFrameSize[0]+t3.x;
+							depth+=pixelDepthCorrection[t3Off].correct(float(depthFrame[t3Off]));
+							}
+						else
+							{
+							depth+=float(depthFrame[t0.y*depthFrameSize[0]+t0.x]);
+							depth+=float(depthFrame[n1.y*depthFrameSize[0]+n1.x]);
+							depth+=float(depthFrame[t1.y*depthFrameSize[0]+t1.x]);
+							depth+=float(depthFrame[n2.y*depthFrameSize[0]+n2.x]);
+							depth+=float(depthFrame[t2.y*depthFrameSize[0]+t2.x]);
+							depth+=float(depthFrame[n3.y*depthFrameSize[0]+n3.x]);
+							depth+=float(depthFrame[t3.y*depthFrameSize[0]+t3.x]);
+							}
 						depth/=7.0f;
 						
 						maxProb=prob;

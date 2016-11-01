@@ -45,7 +45,8 @@ Methods of class BathymetrySaverToolFactory::Configuration:
 BathymetrySaverToolFactory::Configuration::Configuration(void)
 	:saveFileName("BathymetrySaverTool.dem"),
 	 postUpdate(false),postUpdatePort(80),postUpdatePage(""),
-	 postUpdateMessage("app.GenerateTileCache();")
+	 postUpdateMessage("app.GenerateTileCache();"),
+	 gridScale(1.0)
 	{
 	}
 
@@ -57,6 +58,7 @@ void BathymetrySaverToolFactory::Configuration::read(const Misc::ConfigurationFi
 	postUpdatePort=cfs.retrieveValue<int>("./postUpdatePort",postUpdatePort);
 	postUpdatePage=cfs.retrieveString("./postUpdatePage",postUpdatePage);
 	postUpdateMessage=cfs.retrieveString("./postUpdateMessage",postUpdateMessage);
+	gridScale=cfs.retrieveValue<double>("./gridScale",gridScale);
 	}
 
 void BathymetrySaverToolFactory::Configuration::write(Misc::ConfigurationFileSection& cfs) const
@@ -67,6 +69,7 @@ void BathymetrySaverToolFactory::Configuration::write(Misc::ConfigurationFileSec
 	cfs.storeValue<int>("./postUpdatePort",postUpdatePort);
 	cfs.storeString("./postUpdatePage",postUpdatePage);
 	cfs.storeString("./postUpdateMessage",postUpdateMessage);
+	cfs.storeValue<double>("./gridScale",gridScale);
 	}
 
 /*******************************************
@@ -204,7 +207,7 @@ std::ostream& printFloat8(std::ostream& os,double value)
 
 }
 
-void BathymetrySaverTool::writeDEMFile() const
+void BathymetrySaverTool::writeDEMFile(void) const
 	{
 	/* Open the output file as a std::ostream: */
 	IO::OStream demFile(Vrui::openFile(configuration.saveFileName.c_str(),IO::File::WriteOnly));
@@ -229,15 +232,18 @@ void BathymetrySaverTool::writeDEMFile() const
 	printInt2(demFile,2); // Horizontal unit is meters
 	printInt2(demFile,2); // Vertical unit is meters
 	
+	/* Retrieve the grid scale factor: */
+	double gs=configuration.gridScale;
+	
 	/* Write the DEM coverage polygon: */
 	printInt2(demFile,4); // Polygon is quadrangle
 	
 	/* Easter egg: all exported DEMs are centered around Davis, CA: */
 	static const double gridCenter[2]={609959.0, 4268028.0};
-	double west=gridCenter[0]-double(factory->gridSize[0]-1)*double(factory->cellSize[0])*0.5;
-	double east=gridCenter[0]+double(factory->gridSize[0]-1)*double(factory->cellSize[0])*0.5;
-	double north=gridCenter[1]+double(factory->gridSize[1]-1)*double(factory->cellSize[1])*0.5;
-	double south=gridCenter[1]-double(factory->gridSize[1]-1)*double(factory->cellSize[1])*0.5;
+	double west=gridCenter[0]-double(factory->gridSize[0]-1)*double(factory->cellSize[0])*gs*0.5;
+	double east=gridCenter[0]+double(factory->gridSize[0]-1)*double(factory->cellSize[0])*gs*0.5;
+	double north=gridCenter[1]+double(factory->gridSize[1]-1)*double(factory->cellSize[1])*gs*0.5;
+	double south=gridCenter[1]-double(factory->gridSize[1]-1)*double(factory->cellSize[1])*gs*0.5;
 	
 	/* Go around the polygon in clockwise order, starting in south-west corner: */
 	printFloat8(demFile,west);
@@ -260,8 +266,28 @@ void BathymetrySaverTool::writeDEMFile() const
 		if(elevMax<*bbPtr)
 			elevMax=*bbPtr;
 		}
+	
+	// DEBUGGING
+	std::cout<<elevMin<<", "<<elevMax<<std::endl;
+	
+	elevMin*=gs;
+	elevMax*=gs;
 	printFloat8(demFile,elevMin);
 	printFloat8(demFile,elevMax);
+	
+	/* Calculate the elevation quantization offset and scale: */
+	double elevationBase=0.0; // double(elevMin+elevMax)*0.5;
+	double zScale=1000.0; // Quantize to millimeters by default
+	double elevRange=Math::max(Math::abs(elevMax-elevationBase),Math::abs(elevMin-elevationBase));
+	if(elevRange!=0.0)
+		{
+		/* Calculate a power-of-ten scale factor to scale the actual terrain range to -9999 to 9999: */
+		zScale=Math::pow(10.0,Math::floor(Math::log10(9999.0/elevRange)));
+		}
+	
+	// DEBUGGING
+	// std::cout<<elevationBase<<", "<<zScale<<std::endl;
+	// std::cout<<(elevMax-elevationBase)*zScale<<", "<<(elevMin-elevationBase)*zScale<<std::endl;
 	
 	/* Write the grid rotation angle: */
 	printFloat8(demFile,0.0);
@@ -270,10 +296,9 @@ void BathymetrySaverTool::writeDEMFile() const
 	printInt2(demFile,0); // Unknown accuracy
 	
 	/* Write the grid scales with full accuracy. Per spec, only integer values are supported: */
-	printFloat4(demFile,factory->cellSize[0]);
-	printFloat4(demFile,factory->cellSize[1]);
-	double zScale=100.0;
-	printFloat4(demFile,1.0/zScale); // Default elevation scale/quantization is 0.01m
+	printFloat4(demFile,factory->cellSize[0]*gs);
+	printFloat4(demFile,factory->cellSize[1]*gs);
+	printFloat4(demFile,1.0/zScale);
 	
 	/* Write the number of rows and columns in the grid: */
 	printInt2(demFile,1); // Number of rows specified in each grid profile
@@ -283,7 +308,6 @@ void BathymetrySaverTool::writeDEMFile() const
 	size_t fileSize=864U;
 	
 	/* Write all grid columns: */
-	double elevationBase=0.0; // Offset for elevation quantization
 	for(GLsizei column=0;column<factory->gridSize[0];++column)
 		{
 		/* Pad the current file size to a multiple of 1024: */
@@ -296,7 +320,7 @@ void BathymetrySaverTool::writeDEMFile() const
 		printInt2(demFile,column+1); // 1-based column index of this profile
 		printInt2(demFile,factory->gridSize[1]); // Number of rows in profile
 		printInt2(demFile,1); // Number of columns in profile
-		printFloat8(demFile,west+double(column)*double(factory->cellSize[0])); // Easting of first elevation posting in column
+		printFloat8(demFile,west+double(column)*double(factory->cellSize[0])*gs); // Easting of first elevation posting in column
 		printFloat8(demFile,south); // Northing of first elevation posting in column
 		printFloat8(demFile,elevationBase); // Local datum elevation
 		
@@ -312,8 +336,8 @@ void BathymetrySaverTool::writeDEMFile() const
 			if(elevMax<*pPtr)
 				elevMax=*pPtr;
 			}
-		printFloat8(demFile,elevMin);
-		printFloat8(demFile,elevMax);
+		printFloat8(demFile,elevMin*gs);
+		printFloat8(demFile,elevMax*gs);
 		
 		/* Update the file size: */
 		fileSize+=6*4+24*5;
@@ -332,7 +356,7 @@ void BathymetrySaverTool::writeDEMFile() const
 				}
 			
 			/* Quantize and write the posting: */
-			double scaled=(double(*pPtr)-elevationBase)*zScale;
+			double scaled=(double(*pPtr)*gs-elevationBase)*zScale;
 			printInt2(demFile,int(Math::floor(scaled+0.5)));
 			fileSize+=6;
 			}

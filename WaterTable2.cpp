@@ -26,7 +26,6 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <stdarg.h>
 #include <stdio.h>
 #include <string>
-#include <iostream>
 #include <Math/Math.h>
 #include <Geometry/AffineCombiner.h>
 #include <Geometry/Vector.h>
@@ -45,6 +44,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 #include "DepthImageRenderer.h"
 #include "ShaderHelper.h"
+
+// DEBUGGING
+// #include <iostream>
 
 namespace {
 
@@ -361,7 +363,9 @@ WaterTable2::WaterTable2(GLsizei width,GLsizei height,const DepthImageRenderer* 
 	/* Calculate the grid's cell size: */
 	for(int i=0;i<2;++i)
 		cellSize[i]=GLfloat((domain.max[i]-domain.min[i])/Scalar(size[i]));
-	std::cout<<cellSize[0]<<" x "<<cellSize[1]<<std::endl;
+	
+	// DEBUGGING
+	// std::cout<<cellSize[0]<<" x "<<cellSize[1]<<std::endl;
 	
 	/* Calculate the water table transformations: */
 	calcTransformations();

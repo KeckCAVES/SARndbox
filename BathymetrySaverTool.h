@@ -51,6 +51,7 @@ class BathymetrySaverToolFactory:public Vrui::ToolFactory
 		int postUpdatePort; // TCP port number of web server to which to send update messages
 		std::string postUpdatePage; // Name of page on web server to which update messages are posted
 		std::string postUpdateMessage; // The message to send to the web server
+		double gridScale; // Overall scale factor to applied to grids on export
 		
 		/* Constructors and destructors: */
 		Configuration(void); // Creates default configuration
