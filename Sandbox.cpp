@@ -565,7 +565,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	sandboxLayoutFileName.push_back('/');
 	sandboxLayoutFileName.append(CONFIG_DEFAULTBOXLAYOUTFILENAME);
 	sandboxLayoutFileName=cfg.retrieveString("./sandboxLayoutFileName",sandboxLayoutFileName);
-	Math::Interval<double> elevationRange=cfg.retrieveValue<Math::Interval<double> >("./elevationRange",Math::Interval<double>::full);
+	Math::Interval<double> elevationRange=cfg.retrieveValue<Math::Interval<double> >("./elevationRange",Math::Interval<double>(-1000.0,1000.0));
 	bool haveHeightMapPlane=cfg.hasTag("./heightMapPlane");
 	Plane heightMapPlane;
 	if(haveHeightMapPlane)
@@ -580,7 +580,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	wtSize=cfg.retrieveValue<Misc::FixedArray<unsigned int,2> >("./waterTableSize",wtSize);
 	waterSpeed=cfg.retrieveValue<double>("./waterSpeed",1.0);
 	waterMaxSteps=cfg.retrieveValue<unsigned int>("./waterMaxSteps",30U);
-	Math::Interval<double> rainElevationRange=cfg.retrieveValue<Math::Interval<double> >("./rainElevationRange",Math::Interval<double>::full);
+	Math::Interval<double> rainElevationRange=cfg.retrieveValue<Math::Interval<double> >("./rainElevationRange",Math::Interval<double>(-1000.0,1000.0));
 	rainStrength=cfg.retrieveValue<GLfloat>("./rainStrength",0.25f);
 	double evaporationRate=cfg.retrieveValue<double>("./evaporationRate",0.0);
 	float demDistScale=cfg.retrieveValue<float>("./demDistScale",1.0f);
@@ -854,8 +854,10 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	for(int i=0;i<4;++i)
 		for(int j=0;j<3;++j)
 			basePlaneCorners[i][j]*=sf;
-	elevationRange*=sf;
-	rainElevationRange*=sf;
+	if(elevationRange!=Math::Interval<double>::full)
+		elevationRange*=sf;
+	if(rainElevationRange!=Math::Interval<double>::full)
+		rainElevationRange*=sf;
 	for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 		{
 		if(rsIt->elevationColorMap!=0)
@@ -876,10 +878,6 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	frameFilter->setHysteresis(hysteresis);
 	frameFilter->setSpatialFilter(true);
 	frameFilter->setOutputFrameFunction(Misc::createFunctionCall(this,&Sandbox::receiveFilteredFrame));
-	
-	/* Limit the valid rain elevation range to above the valid elevation range: */
-	if(rainElevationRange.getMin()<elevationRange.getMax())
-		rainElevationRange=Math::Interval<double>(elevationRange.getMax(),rainElevationRange.getMax());
 	
 	if(waterSpeed>0.0)
 		{

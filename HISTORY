@@ -85,3 +85,8 @@ SARndbox-2.2:
 - Bumped Vrui version requirement to Vrui-4.2-001.
 - Bumped Kinect version requirement to Kinect-3.2.
 - Added tool to save the current surface as a DEM file.
+
+SARndbox-2.3:
+- Fixed minor scaling issues with sandbox.
+- Established better defaults for elevation and rain elevation ranges.
+- Added grid scaling option to BathymetrySaverTool.
