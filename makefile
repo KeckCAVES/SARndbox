@@ -1,6 +1,6 @@
 ########################################################################
 # Makefile for the Augmented Reality Sandbox.
-# Copyright (c) 2012-2016 Oliver Kreylos
+# Copyright (c) 2012-2018 Oliver Kreylos
 #
 # This file is part of the WhyTools Build Environment.
 # 
@@ -24,7 +24,7 @@
 # matches the default Vrui installation; if Vrui's installation
 # directory was changed during Vrui's installation, the directory below
 # must be adapted.
-VRUI_MAKEDIR := /usr/local/share/Vrui-4.2/make
+VRUI_MAKEDIR := /usr/local/share/Vrui-4.4/make
 ifdef DEBUG
   VRUI_MAKEDIR := $(VRUI_MAKEDIR)/debug
 endif
@@ -47,7 +47,7 @@ INSTALLDIR := $(PWD)
 # clobbering each other. The value should be identical to the
 # major.minor version number found in VERSION in the root package
 # directory.
-VERSION = 2.3
+VERSION = 2.4
 
 # Set up resource directories: */
 CONFIGDIR = etc/SARndbox-$(VERSION)

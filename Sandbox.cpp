@@ -42,6 +42,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <Misc/ConfigurationFile.h>
 #include <IO/File.h>
 #include <IO/ValueSource.h>
+#include <Cluster/OpenPipe.h>
 #include <Math/Math.h>
 #include <Math/Constants.h>
 #include <Math/Interval.h>
@@ -86,6 +87,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <Vrui/DisplayState.h>
 #include <Vrui/OpenFile.h>
 #include <Kinect/FileFrameSource.h>
+#include <Kinect/MultiplexedFrameSource.h>
 #include <Kinect/DirectFrameSource.h>
 #include <Kinect/OpenDirectFrameSource.h>
 
@@ -589,6 +591,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	/* Process command line parameters: */
 	bool printHelp=false;
 	const char* frameFilePrefix=0;
+	const char* kinectServerName=0;
 	int windowIndex=0;
 	renderSettings.push_back(RenderSettings());
 	for(int i=1;i<argc;++i)
@@ -606,6 +609,11 @@ Sandbox::Sandbox(int& argc,char**& argv)
 				{
 				++i;
 				frameFilePrefix=argv[i];
+				}
+			else if(strcasecmp(argv[i]+1,"p")==0)
+				{
+				++i;
+				kinectServerName=argv[i];
 				}
 			else if(strcasecmp(argv[i]+1,"s")==0)
 				{
@@ -786,6 +794,34 @@ Sandbox::Sandbox(int& argc,char**& argv)
 		depthFileName.append(".depth");
 		camera=new Kinect::FileFrameSource(Vrui::openFile(colorFileName.c_str()),Vrui::openFile(depthFileName.c_str()));
 		}
+	else if(kinectServerName!=0)
+		{
+		/* Split the server name into host name and port: */
+		const char* colonPtr=0;
+		for(const char* snPtr=kinectServerName;*snPtr!='\0';++snPtr)
+			if(*snPtr==':')
+				colonPtr=snPtr;
+		std::string hostName;
+		int port;
+		if(colonPtr!=0)
+			{
+			/* Extract host name and port: */
+			hostName=std::string(kinectServerName,colonPtr);
+			port=atoi(colonPtr+1);
+			}
+		else
+			{
+			/* Use complete host name and default port: */
+			hostName=kinectServerName;
+			port=26000;
+			}
+		
+		/* Open a multiplexed frame source for the given server host name and port number: */
+		Kinect::MultiplexedFrameSource* source=Kinect::MultiplexedFrameSource::create(Cluster::openTCPPipe(Vrui::getClusterMultiplexer(),hostName.c_str(),port));
+		
+		/* Use the server's first component stream as the camera device: */
+		camera=source->getStream(0);
+		}
 	else
 		{
 		/* Open the 3D camera device of the selected index: */
@@ -890,7 +926,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	
 	/* Create the depth image renderer: */
 	depthImageRenderer=new DepthImageRenderer(frameSize);
-	depthImageRenderer->setDepthProjection(cameraIps.depthProjection);
+	depthImageRenderer->setIntrinsics(cameraIps);
 	depthImageRenderer->setBasePlane(basePlane);
 	
 	/* Calculate the transformation from camera space to sandbox space: */
@@ -1153,6 +1189,41 @@ void Sandbox::frame(void)
 				for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 					if(rsIt->elevationColorMap!=0)
 						rsIt->elevationColorMap->calcTexturePlane(heightMapPlane);
+				}
+			else if(strcasecmp(command,"dippingBed")==0)
+				{
+				if(strcasecmp(parameter,"off")==0)
+					{
+					/* Disable dipping bed rendering on all surface renderers: */
+					for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+						rsIt->surfaceRenderer->setDrawDippingBed(false);
+					}
+				else
+					{
+					/* Read the dipping bed plane equation: */
+					GLfloat dbp[4];
+					char* endPtr=parameter;
+					for(int i=0;i<4;++i)
+						dbp[i]=GLfloat(strtod(endPtr,&endPtr));
+					SurfaceRenderer::Plane dippingBedPlane=SurfaceRenderer::Plane(SurfaceRenderer::Plane::Vector(dbp),dbp[3]);
+					dippingBedPlane.normalize();
+					
+					/* Enable dipping bed rendering and set the dipping bed plane equation on all surface renderers: */
+					for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+						{
+						rsIt->surfaceRenderer->setDrawDippingBed(true);
+						rsIt->surfaceRenderer->setDippingBedPlane(dippingBedPlane);
+						}
+					}
+				}
+			else if(strcasecmp(command,"dippingBedThickness")==0)
+				{
+				/* Read the dipping bed thickness: */
+				float dippingBedThickness=float(atof(parameter));
+				
+				/* Set the dipping bed thickness on all surface renderers: */
+				for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+					rsIt->surfaceRenderer->setDippingBedThickness(dippingBedThickness);
 				}
 			}
 		}

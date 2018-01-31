@@ -2,7 +2,7 @@
 DepthImageRenderer - Class to centralize storage of raw or filtered
 depth images on the GPU, and perform simple repetitive rendering tasks
 such as rendering elevation values into a frame buffer.
-Copyright (c) 2014 Oliver Kreylos
+Copyright (c) 2014-2018 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -29,6 +29,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <GL/GLObject.h>
 #include <GL/GLGeometryVertex.h>
 #include <Kinect/FrameBuffer.h>
+#include <Kinect/FrameSource.h>
 
 #include "Types.h"
 
@@ -62,6 +63,7 @@ class DepthImageRenderer:public GLObject
 	
 	/* Elements: */
 	unsigned int depthImageSize[2]; // Size of depth image texture
+	Kinect::LensDistortion lensDistortion; // 2D lens distortion parameters
 	PTransform depthProjection; // Projection matrix from depth image space into 3D camera space
 	GLfloat depthProjectionMatrix[16]; // Same, in GLSL-compatible format
 	GLfloat weightDicEq[4]; // Equation to calculate the weight of a depth image-space point in 3D camera space
@@ -97,6 +99,7 @@ class DepthImageRenderer:public GLObject
 		return basePlane;
 		}
 	void setDepthProjection(const PTransform& newDepthProjection); // Sets a new depth unprojection matrix
+	void setIntrinsics(const Kinect::FrameSource::IntrinsicParameters& ips); // Sets a new depth unprojection matrix and, if present, 2D lens distortion parameters
 	void setBasePlane(const Plane& newBasePlane); // Sets a new base plane for elevation rendering
 	void setDepthImage(const Kinect::FrameBuffer& newDepthImage); // Sets a new depth image for subsequent surface rendering
 	Scalar intersectLine(const Point& p0,const Point& p1,Scalar elevationMin,Scalar elevationMax) const; // Intersects a line segment with the current depth image in camera space; returns intersection point's parameter along line

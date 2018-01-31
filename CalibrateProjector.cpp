@@ -1,7 +1,7 @@
 /***********************************************************************
 CalibrateProjector - Utility to calculate the calibration transformation
 of a projector into a Kinect-captured 3D space.
-Copyright (c) 2012-2015 Oliver Kreylos
+Copyright (c) 2012-2018 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -29,20 +29,27 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <iostream>
 #include <iomanip>
 #include <Misc/FunctionCalls.h>
-#include <Misc/File.h>
 #include <IO/ValueSource.h>
 #include <IO/CSVSource.h>
 #include <IO/File.h>
 #include <IO/OpenFile.h>
+#include <Cluster/OpenPipe.h>
 #include <Math/Math.h>
+#include <Math/Constants.h>
 #include <Math/Interval.h>
 #include <Geometry/GeometryValueCoders.h>
-#include <GL/GLContextData.h>
-#include <GL/Extensions/GLARBTextureNonPowerOfTwo.h>
-#include <Images/ExtractBlobs.h>
+#include <GL/gl.h>
+#include <GL/GLGeometryWrappers.h>
+#include <GL/GLTransformationWrappers.h>
 #include <Vrui/Vrui.h>
+#include <Vrui/VRScreen.h>
 #include <Vrui/ToolManager.h>
+#include <Vrui/DisplayState.h>
 #include <Vrui/OpenFile.h>
+#include <Kinect/DirectFrameSource.h>
+#include <Kinect/OpenDirectFrameSource.h>
+#include <Kinect/Camera.h>
+#include <Kinect/MultiplexedFrameSource.h>
 
 #include "Config.h"
 
@@ -82,97 +89,64 @@ void CalibrateProjector::CaptureTool::buttonCallback(int buttonSlotIndex,Vrui::I
 		}
 	}
 
-/*********************************************
-Methods of class CalibrateProjector::DataItem:
-*********************************************/
-
-CalibrateProjector::DataItem::DataItem(void)
-	:blobImageTextureId(0),blobImageVersion(0)
-	{
-	glGenTextures(1,&blobImageTextureId);
-	}
-
-CalibrateProjector::DataItem::~DataItem(void)
-	{
-	glDeleteTextures(1,&blobImageTextureId);
-	}
-
-namespace {
-
-/**************
-Helper classes:
-**************/
-
-class BlobForegroundSelector // Functor class to select foreground pixels
-	{
-	/* Methods: */
-	public:
-	bool operator()(unsigned int x,unsigned int y,const Kinect::FrameSource::DepthPixel& pixel) const
-		{
-		return pixel<Kinect::FrameSource::invalidDepth;
-		}
-	};
-
-class BlobMergeChecker // Functor class to check whether two pixels can belong to the same blob
-	{
-	/* Elements: */
-	private:
-	int maxDepthDist;
-	
-	/* Constructors and destructors: */
-	public:
-	BlobMergeChecker(int sMaxDepthDist)
-		:maxDepthDist(sMaxDepthDist)
-		{
-		}
-	
-	/* Methods: */
-	bool operator()(unsigned int x1,unsigned int y1,const Kinect::FrameSource::DepthPixel& pixel1,unsigned int x2,unsigned int y2,const Kinect::FrameSource::DepthPixel& pixel2) const
-		{
-		return Math::abs(int(pixel1)-int(pixel2))<=maxDepthDist;
-		}
-	};
-
-}
-
 /***********************************
 Methods of class CalibrateProjector:
 ***********************************/
 
 void CalibrateProjector::depthStreamingCallback(const Kinect::FrameBuffer& frameBuffer)
 	{
-	/* Do nothing if currently capturing background frames: */
-	if(capturingBackground)
-		return;
+	/* Forward depth frame to the sphere extractor: */
+	diskExtractor->submitFrame(frameBuffer);
 	
-	/* Put the new raw frame into the triple buffer: */
-	rawFrames.postNewValue(frameBuffer);
+	/* Forward depth frame to the projector: */
+	projector->setDepthFrame(frameBuffer);
 	
-	/* Wake up the foreground thread: */
+	#if KINECT_CONFIG_USE_SHADERPROJECTOR
+	/* Update application state: */
+	Vrui::requestUpdate();
+	#endif
+	}
+
+#if !KINECT_CONFIG_USE_SHADERPROJECTOR
+
+void CalibrateProjector::meshStreamingCallback(const Kinect::MeshBuffer& meshBuffer)
+	{
+	/* Update application state: */
 	Vrui::requestUpdate();
 	}
+
+#endif
 
 void CalibrateProjector::backgroundCaptureCompleteCallback(Kinect::DirectFrameSource&)
 	{
 	/* Reset the background capture flag: */
 	std::cout<<" done"<<std::endl;
-	camera->setRemoveBackground(true);
 	capturingBackground=false;
 	
+	/* Enable background removal: */
+	dynamic_cast<Kinect::DirectFrameSource*>(camera)->setRemoveBackground(true);
+	
 	/* Wake up the foreground thread: */
+	Vrui::requestUpdate();
+	}
+
+void CalibrateProjector::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks)
+	{
+	/* Store the new disk list in the triple buffer: */
+	Kinect::DiskExtractor::DiskList& newList=diskList.startNewValue();
+	newList=disks;
+	diskList.postNewValue();
+	
+	/* Wake up the main thread: */
 	Vrui::requestUpdate();
 	}
 
 CalibrateProjector::CalibrateProjector(int& argc,char**& argv)
 	:Vrui::Application(argc,argv),
 	 numTiePointFrames(60),numBackgroundFrames(120),
-	 blobMergeDepth(1),
-	 camera(0),
-	 pixelDepthCorrection(0),
-	 capturingBackground(false),
-	 blobIdImage(0),blobImage(0),blobImageVersion(0),
-	 currentBlob(0),
-	 capturingTiePoint(false),numCaptureFrames(0),
+	 camera(0),diskExtractor(0),projector(0),
+	 capturingBackground(false),capturingTiePoint(false),numCaptureFrames(0),
+	 tiePointIndex(0),
 	 haveProjection(false),projection(4,4)
 	{
 	/* Register the custom tool class: */
@@ -190,11 +164,13 @@ CalibrateProjector::CalibrateProjector(int& argc,char**& argv)
 	projectionMatrixFileName=CONFIG_CONFIGDIR;
 	projectionMatrixFileName.push_back('/');
 	projectionMatrixFileName.append(CONFIG_DEFAULTPROJECTIONMATRIXFILENAME);
+	Kinect::MultiplexedFrameSource* remoteSource=0;
 	int cameraIndex=0;
 	imageSize[0]=1024;
 	imageSize[1]=768;
 	numTiePoints[0]=4;
 	numTiePoints[1]=3;
+	int blobMergeDepth=2;
 	const char* tiePointFileName=0;
 	for(int i=1;i<argc;++i)
 		{
@@ -205,43 +181,63 @@ CalibrateProjector::CalibrateProjector(int& argc,char**& argv)
 			else if(strcasecmp(argv[i]+1,"slf")==0)
 				{
 				++i;
-				sandboxLayoutFileName=argv[i];
+				if(i<argc)
+					sandboxLayoutFileName=argv[i];
+				}
+			else if(strcasecmp(argv[i]+1,"r")==0)
+				{
+				i+=2;
+				if(i<argc)
+					{
+					/* Open a connection to a remote Kinect server: */
+					remoteSource=Kinect::MultiplexedFrameSource::create(Cluster::openTCPPipe(Vrui::getClusterMultiplexer(),argv[i-1],atoi(argv[i])));
+					}
 				}
 			else if(strcasecmp(argv[i]+1,"c")==0)
 				{
 				++i;
-				cameraIndex=atoi(argv[i]);
+				if(i<argc)
+					cameraIndex=atoi(argv[i]);
 				}
 			else if(strcasecmp(argv[i]+1,"s")==0)
 				{
-				for(int j=0;j<2;++j)
+				if(i+2<argc)
 					{
-					++i;
-					imageSize[j]=atoi(argv[i]);
+					for(int j=0;j<2;++j)
+						{
+						++i;
+						imageSize[j]=atoi(argv[i]);
+						}
 					}
 				}
 			else if(strcasecmp(argv[i]+1,"tp")==0)
 				{
-				for(int j=0;j<2;++j)
+				if(i+2<argc)
 					{
-					++i;
-					numTiePoints[j]=atoi(argv[i]);
+					for(int j=0;j<2;++j)
+						{
+						++i;
+						numTiePoints[j]=atoi(argv[i]);
+						}
 					}
 				}
 			else if(strcasecmp(argv[i]+1,"bmd")==0)
 				{
 				++i;
-				blobMergeDepth=atoi(argv[i]);
+				if(i<argc)
+					blobMergeDepth=atoi(argv[i]);
 				}
 			else if(strcasecmp(argv[i]+1,"tpf")==0)
 				{
 				++i;
-				tiePointFileName=argv[i];
+				if(i<argc)
+					tiePointFileName=argv[i];
 				}
 			else if(strcasecmp(argv[i]+1,"pmf")==0)
 				{
 				++i;
-				projectionMatrixFileName=argv[i];
+				if(i<argc)
+					projectionMatrixFileName=argv[i];
 				}
 			}
 		}
@@ -255,9 +251,13 @@ CalibrateProjector::CalibrateProjector(int& argc,char**& argv)
 		std::cout<<"  -slf <sandbox layout file name>"<<std::endl;
 		std::cout<<"     Loads the sandbox layout file of the given name"<<std::endl;
 		std::cout<<"     Default: "<<CONFIG_CONFIGDIR<<'/'<<CONFIG_DEFAULTBOXLAYOUTFILENAME<<std::endl;
+		std::cout<<"  -r <server host name> <server port number>"<<std::endl;
+		std::cout<<"     Connects to a remote 3D video server on the given host name /"<<std::endl;
+		std::cout<<"     port number"<<std::endl;
+		std::cout<<"     Default: <empty>"<<std::endl;
 		std::cout<<"  -c <camera index>"<<std::endl;
-		std::cout<<"     Selects the local Kinect camera of the given index (0: first camera"<<std::endl;
-		std::cout<<"     on USB bus)"<<std::endl;
+		std::cout<<"     Selects the 3D camera of the given index on the local USB bus or"<<std::endl;
+		std::cout<<"     on the remote 3D video server (0: first camera)"<<std::endl;
 		std::cout<<"     Default: 0"<<std::endl;
 		std::cout<<"  -s <projector image width> <projector image height>"<<std::endl;
 		std::cout<<"     Sets the width and height of the projector image in pixels. This"<<std::endl;
@@ -288,9 +288,25 @@ CalibrateProjector::CalibrateProjector(int& argc,char**& argv)
 		{
 		layoutSource.skipWs();
 		s=layoutSource.readLine();
-		basePlaneCorners[i]=Misc::ValueCoder<OPoint>::decode(s.c_str(),s.c_str()+s.length());
+		basePlaneCorners[i]=basePlane.project(Misc::ValueCoder<OPoint>::decode(s.c_str(),s.c_str()+s.length()));
 		}
 	}
+	
+	/* Calculate the transformation from camera space to sandbox space: */
+	{
+	ONTransform::Vector z=basePlane.getNormal();
+	ONTransform::Vector x=(basePlaneCorners[1]-basePlaneCorners[0])+(basePlaneCorners[3]-basePlaneCorners[2]);
+	x.orthogonalize(z);
+	ONTransform::Vector y=z^x;
+	boxTransform=ONTransform::rotate(Geometry::invert(ONTransform::Rotation::fromBaseVectors(x,y)));
+	ONTransform::Point center=Geometry::mid(Geometry::mid(basePlaneCorners[0],basePlaneCorners[1]),Geometry::mid(basePlaneCorners[2],basePlaneCorners[3]));
+	boxTransform*=ONTransform::translateToOriginFrom(basePlane.project(center));
+	}
+	
+	/* Calculate a bounding box around the sandbox area: */
+	bbox=Box::empty;
+	for(int i=0;i<4;++i)
+		bbox.addPoint(boxTransform.transform(basePlaneCorners[i]));
 	
 	if(tiePointFileName!=0)
 		{
@@ -315,35 +331,60 @@ CalibrateProjector::CalibrateProjector(int& argc,char**& argv)
 			}
 		}
 	
-	/* Open the Kinect camera device: */
-	camera=new Kinect::Camera(cameraIndex);
-	camera->setCompressDepthFrames(true);
-	camera->setSmoothDepthFrames(false);
-	camera->setBackgroundRemovalFuzz(1);
+	/* Open the requested 3D video source: */
+	if(remoteSource!=0)
+		{
+		/* Open the camera of selected index on the remote server: */
+		camera=remoteSource->getStream(cameraIndex);
+		}
+	else
+		{
+		/* Open the camera of selected index on the local USB bus: */
+		Kinect::DirectFrameSource* directCamera=Kinect::openDirectFrameSource(cameraIndex);
+		camera=directCamera;
+		
+		/* Set some camera type-specific parameters: */
+		directCamera->setBackgroundRemovalFuzz(1);
+		
+		/* Check if the camera is a first-generation Kinect: */
+		Kinect::Camera* kinectV1=dynamic_cast<Kinect::Camera*>(directCamera);
+		if(kinectV1!=0)
+			{
+			/* Set Kinect v1-specific parameters: */
+			kinectV1->setCompressDepthFrames(true);
+			kinectV1->setSmoothDepthFrames(false);
+			}
+		}
 	
-	/* Get the camera's depth frame size: */
-	for(int i=0;i<2;++i)
-		frameSize[i]=camera->getActualFrameSize(Kinect::FrameSource::DEPTH)[i];
+	/* Create a disk extractor for the 3D video source: */
+	diskExtractor=new Kinect::DiskExtractor(camera->getActualFrameSize(Kinect::FrameSource::DEPTH),camera->getDepthCorrectionParameters(),camera->getIntrinsicParameters());
+	diskExtractor->setMaxBlobMergeDist(blobMergeDepth);
+	diskExtractor->setMinNumPixels(250);
+	diskExtractor->setDiskRadius(6.0);
+	diskExtractor->setDiskRadiusMargin(1.10);
+	diskExtractor->setDiskFlatness(1.0);
 	
-	/* Get the camera's depth correction coefficients and create the per-pixel correction buffer: */
-	Kinect::FrameSource::DepthCorrection* dc=camera->getDepthCorrectionParameters();
-	pixelDepthCorrection=dc->getPixelCorrection(frameSize);
-	delete dc;
+	/* Create a projector for the 3D video source: */
+	projector=new Kinect::ProjectorType(*camera);
+	projector->setTriangleDepthRange(blobMergeDepth);
 	
-	/* Get the camera's intrinsic parameters: */
-	cameraIps=camera->getIntrinsicParameters();
+	/* Reset the projector's extrinsic parameters: */
+	projector->setExtrinsicParameters(Kinect::FrameSource::ExtrinsicParameters::identity);
 	
-	/* Create the blob ID image: */
-	blobIdImage=new unsigned int[frameSize[1]*frameSize[0]];
-	blobImage=new GLColor<GLubyte,3>[frameSize[1]*frameSize[0]];
-	GLColor<GLubyte,3>* biPtr=blobImage;
-	for(unsigned int y=0;y<frameSize[1];++y)
-		for(unsigned int x=0;x<frameSize[0];++x,++biPtr)
-			*biPtr=GLColor<GLubyte,3>(0,0,0);
-	blobImageVersion=1;
+	#if KINECT_CONFIG_USE_PROJECTOR2
 	
-	/* Start streaming depth frames: */
-	camera->startStreaming(0,Misc::createFunctionCall(this,&CalibrateProjector::depthStreamingCallback));
+	/* Disable color mapping and illumination on the projector: */
+	projector->setMapTexture(false);
+	projector->setIlluminate(false);
+	
+	#endif
+	
+	/* Start streaming from the 3D video source and extracting disks: */
+	diskExtractor->startStreaming(Misc::createFunctionCall(this,&CalibrateProjector::diskExtractionCallback));
+	#if !KINECT_CONFIG_USE_SHADERPROJECTOR
+	projector->startStreaming(Misc::createFunctionCall(this,&CalibrateProjector::meshStreamingCallback));
+	#endif
+	camera->startStreaming(Misc::createFunctionCall(projector,&Kinect::ProjectorType::setColorFrame),Misc::createFunctionCall(this,&CalibrateProjector::depthStreamingCallback));
 	
 	/* Start capturing the initial background frame: */
 	startBackgroundCapture();
@@ -351,147 +392,62 @@ CalibrateProjector::CalibrateProjector(int& argc,char**& argv)
 
 CalibrateProjector::~CalibrateProjector(void)
 	{
-	/* Delete blob extraction state: */
-	delete currentBlob;
-	
-	/* Stop streaming and close the Kinect camera device: */
+	/* Stop streaming from the 3D video source: */
 	camera->stopStreaming();
-	delete camera;
+	diskExtractor->stopStreaming();
 	
-	/* Delete allocated buffers: */
-	delete[] blobIdImage;
-	delete[] blobImage;
-	delete[] pixelDepthCorrection;
+	/* Clean up: */
+	delete diskExtractor;
+	delete projector;
+	delete camera;
 	}
 
 void CalibrateProjector::frame(void)
 	{
-	/* Check if there is a new raw depth frame: */
-	if(rawFrames.lockNewValue())
+	/* Check if we are capturing a tie point and there is a new list of extracted disks: */
+	if(diskList.lockNewValue()&&capturingTiePoint&&diskList.getLockedValue().size()==1)
 		{
-		/* Extract all foreground blobs from the raw depth frame: */
-		const DepthPixel* framePixels=rawFrames.getLockedValue().getData<DepthPixel>();
-		BlobForegroundSelector bfs;
-		BlobMergeChecker bmc(blobMergeDepth);
-		DepthCentroidBlob::Creator blobCreator;
-		for(int i=0;i<2;++i)
-			blobCreator.frameSize[i]=frameSize[i];
-		blobCreator.pixelDepthCorrection=pixelDepthCorrection;
-		blobCreator.depthProjection=cameraIps.depthProjection;
-		std::vector<DepthCentroidBlob> blobs=Images::extractBlobs<DepthCentroidBlob>(frameSize,framePixels,bfs,bmc,blobCreator,blobIdImage);
+		/* Access the only extracted disk: */
+		const Kinect::DiskExtractor::Disk& disk=diskList.getLockedValue().front();
 		
-		/* Find the largest blob that is inside the sandbox area and roughly disk-shaped: */
-		std::vector<DepthCentroidBlob>::iterator biggestBlobIt=blobs.end();
-		size_t maxNumPixels=50;
-		for(std::vector<DepthCentroidBlob>::iterator bIt=blobs.begin();bIt!=blobs.end();++bIt)
-			if(maxNumPixels<bIt->numPixels)
-				{
-				/* Check if the blob is inside the configured sandbox area and roughly blob-shaped: */
-				OPoint blobCentroid=bIt->getCentroid(cameraIps.depthProjection);
-				bool inside=true;
-				inside=inside&&Geometry::cross(basePlane.getNormal(),basePlaneCorners[1]-basePlaneCorners[0])*(blobCentroid-basePlaneCorners[0])>=0.0;
-				inside=inside&&Geometry::cross(basePlane.getNormal(),basePlaneCorners[3]-basePlaneCorners[1])*(blobCentroid-basePlaneCorners[1])>=0.0;
-				inside=inside&&Geometry::cross(basePlane.getNormal(),basePlaneCorners[2]-basePlaneCorners[3])*(blobCentroid-basePlaneCorners[3])>=0.0;
-				inside=inside&&Geometry::cross(basePlane.getNormal(),basePlaneCorners[0]-basePlaneCorners[2])*(blobCentroid-basePlaneCorners[2])>=0.0;
-				double fillRatio=double(bIt->numPixels)/(double(bIt->bbMax[0]-bIt->bbMin[0])*double(bIt->bbMax[1]-bIt->bbMin[1]));
-				if(inside&&fillRatio>=0.7) // Approximate fill ratio of a circle inside a square
-					{
-					/* Use this blob for now: */
-					biggestBlobIt=bIt;
-					maxNumPixels=bIt->numPixels;
-					}
-				}
+		/* Check if there is a real disk center position: */
+		bool diskValid=true;
+		for(int i=0;i<3;++i)
+			diskValid=diskValid&&Math::isFinite(disk.center[i]);
 		
-		/* Update the current blob: */
-		delete currentBlob;
-		currentBlob=0;
-		if(biggestBlobIt!=blobs.end())
-			{
-			currentBlob=new DepthCentroidBlob(*biggestBlobIt);
-			currentCentroid=currentBlob->getCentroid(cameraIps.depthProjection);
-			}
+		#if 0
 		
-		/* Create the blob image: */
-		#if VISUALIZE_BLOBS
-		GLColor<GLubyte,3> blobColors[]=
-			{
-			GLColor<GLubyte,3>(255,0,0),
-			GLColor<GLubyte,3>(255,255,0),
-			GLColor<GLubyte,3>(0,255,255),
-			GLColor<GLubyte,3>(0,0,255),
-			GLColor<GLubyte,3>(255,0,255),
-			GLColor<GLubyte,3>(128,0,0),
-			GLColor<GLubyte,3>(128,128,0),
-			GLColor<GLubyte,3>(0,128,0),
-			GLColor<GLubyte,3>(0,128,128),
-			GLColor<GLubyte,3>(0,0,128),
-			GLColor<GLubyte,3>(128,0,128),
-			GLColor<GLubyte,3>(255,128,128),
-			GLColor<GLubyte,3>(255,255,128),
-			GLColor<GLubyte,3>(128,255,128),
-			GLColor<GLubyte,3>(128,255,255),
-			GLColor<GLubyte,3>(128,128,255),
-			GLColor<GLubyte,3>(255,128,255)
-			};
-		const unsigned int numBlobColors=sizeof(blobColors)/sizeof(blobColors[0]);
+		/* Check if the disk is inside the sandbox area: */
+		diskValid=diskValid&&(basePlane.getNormal()^(basePlaneCorners[1]-basePlaneCorners[0]))*(disk.center-basePlaneCorners[0])>=0.0;
+		diskValid=diskValid&&(basePlane.getNormal()^(basePlaneCorners[3]-basePlaneCorners[1]))*(disk.center-basePlaneCorners[1])>=0.0;
+		diskValid=diskValid&&(basePlane.getNormal()^(basePlaneCorners[2]-basePlaneCorners[3]))*(disk.center-basePlaneCorners[3])>=0.0;
+		diskValid=diskValid&&(basePlane.getNormal()^(basePlaneCorners[0]-basePlaneCorners[2]))*(disk.center-basePlaneCorners[2])>=0.0;
+		
 		#endif
 		
-		const unsigned int* biiPtr=blobIdImage;
-		GLColor<GLubyte,3>* biPtr=blobImage;
-		for(unsigned int y=0;y<frameSize[1];++y)
-			for(unsigned int x=0;x<frameSize[0];++x,++biiPtr,++biPtr)
-				{
-				#if VISUALIZE_BLOBS
-				
-				/* Assign different colors to each blob: */
-				if(currentBlob!=0&&*biiPtr==currentBlob->blobId)
-					*biPtr=GLColor<GLubyte,3>(0,255,0);
-				else if(*biiPtr==~0x0U)
-					*biPtr=GLColor<GLubyte,3>(0,0,0);
-				else
-					*biPtr=blobColors[(*biiPtr)%numBlobColors];
-				
-				#else
-				
-				/* Make the current target blob green and all others yellow: */
-				if(currentBlob!=0&&*biiPtr==currentBlob->blobId)
-					*biPtr=GLColor<GLubyte,3>(0,255,0);
-				else if(*biiPtr!=~0x0U)
-					*biPtr=GLColor<GLubyte,3>(255,255,0);
-				else
-					*biPtr=GLColor<GLubyte,3>(0,0,0);
-				
-				#endif
-				}
-		++blobImageVersion;
-		
-		/* Check if we are currently capturing a tie point: */
-		if(capturingTiePoint&&currentBlob!=0)
+		if(diskValid)
 			{
-			/* Add the current target blob to the tie point combiner: */
-			tiePointCombiner.addPoint(currentCentroid);
-			--numCaptureFrames;
+			/* Store the just-captured tie point: */
+			TiePoint tp;
+			int xIndex=tiePointIndex%numTiePoints[0];
+			int yIndex=(tiePointIndex/numTiePoints[0])%numTiePoints[1];
+			int x=(xIndex+1)*imageSize[0]/(numTiePoints[0]+1);
+			int y=(yIndex+1)*imageSize[1]/(numTiePoints[1]+1);
+			tp.p=PPoint(Scalar(x)+Scalar(0.5),Scalar(y)+Scalar(0.5));
+			tp.o=disk.center;
+			tiePoints.push_back(tp);
 			
+			/* Check if that's enough: */
+			--numCaptureFrames;
 			if(numCaptureFrames==0)
 				{
-				/* Store the just-captured tie point: */
-				TiePoint tp;
-				int pointIndex=int(tiePoints.size());
-				int xIndex=pointIndex%numTiePoints[0];
-				int yIndex=(pointIndex/numTiePoints[0])%numTiePoints[1];
-				int x=(xIndex+1)*imageSize[0]/(numTiePoints[0]+1);
-				int y=(yIndex+1)*imageSize[1]/(numTiePoints[1]+1);
-				tp.p=PPoint(Scalar(x)+Scalar(0.5),Scalar(y)+Scalar(0.5));
-				tp.o=tiePointCombiner.getPoint();
-				tiePoints.push_back(tp);
-				
-				std::cout<<" done"<<std::endl;
-				std::cout<<"Tie point: "<<tp.p[0]<<", "<<tp.p[1]<<"; "<<tp.o[0]<<", "<<tp.o[1]<<", "<<tp.o[2]<<std::endl;
-				
+				/* Stop capturing this tie point and move to the next: */
+				std::cout<<"done"<<std::endl;
 				capturingTiePoint=false;
+				++tiePointIndex;
 				
 				/* Check if the calibration is complete: */
-				if(tiePoints.size()>=size_t(numTiePoints[0]*numTiePoints[1]))
+				if(tiePointIndex>=numTiePoints[0]*numTiePoints[1])
 					{
 					/* Calculate the calibration transformation: */
 					calcCalibration();
@@ -499,27 +455,30 @@ void CalibrateProjector::frame(void)
 				}
 			}
 		}
+	
+	/* Update the projector: */
+	projector->updateFrames();
 	}
 
 void CalibrateProjector::display(GLContextData& contextData) const
 	{
-	/* Get the context data item: */
-	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
-	
+	/* Set up OpenGL state: */
 	glPushAttrib(GL_ENABLE_BIT|GL_LINE_BIT);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_DEPTH_TEST);
 	glDisable(GL_LIGHTING);
 	glLineWidth(1.0f);
 	
-	/* Go to screen space: */
-	glPushMatrix();
-	glLoadIdentity();
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-	glOrtho(0.0,double(imageSize[0]),0.0,double(imageSize[1]),-1.0,1.0);
-	
 	if(capturingBackground)
 		{
+		/* Go to screen space: */
+		glPushMatrix();
+		glLoadIdentity();
+		glMatrixMode(GL_PROJECTION);
+		glPushMatrix();
+		glLoadIdentity();
+		glOrtho(0.0,double(imageSize[0]),0.0,double(imageSize[1]),-1.0,1.0);
+		
 		/* Indicate that a background frame is being captured: */
 		glBegin(GL_QUADS);
 		glColor3f(1.0f,0.0f,0.0f);
@@ -528,13 +487,84 @@ void CalibrateProjector::display(GLContextData& contextData) const
 		glVertex2f(float(imageSize[0]),float(imageSize[1]));
 		glVertex2f(0.0f,float(imageSize[1]));
 		glEnd();
+		
+		/* Return to navigational space: */
+		glPopMatrix();
+		glMatrixMode(GL_MODELVIEW);
+		glPopMatrix();
 		}
 	else
 		{
+		/* Set up an orthographic projection showing the sandbox area from above: */
+		glMatrixMode(GL_PROJECTION);
+		glPushMatrix();
+		glLoadIdentity();
+		
+		/* Match the sandbox area's aspect ratio against the display screen: */
+		Scalar bbw=bbox.getSize(0);
+		Scalar bbh=bbox.getSize(1);
+		const Vrui::VRScreen* screen=Vrui::getDisplayState(contextData).screen;
+		Scalar sw=screen->getWidth();
+		Scalar sh=screen->getHeight();
+		if(bbw*sh>=sw*bbh) // Sandbox area is wider
+			{
+			Scalar filler=Math::div2((bbw*sh)/sw-bbh);
+			glOrtho(bbox.min[0],bbox.max[0],bbox.min[1]-filler,bbox.max[1]+filler,-200.0,200.0);
+			}
+		else // Sandbox area is taller
+			{
+			Scalar filler=Math::div2((bbh*sw)/sh-bbw);
+			glOrtho(bbox.min[0]-filler,bbox.max[0]+filler,bbox.min[0],bbox.max[0],-200.0,200.0);
+			}
+		
+		/* Transform camera space to sandbox space: */
+		glMatrixMode(GL_MODELVIEW);
+		glPushMatrix();
+		glLoadMatrix(boxTransform);
+		
+		/* Draw the sandbox outline: */
+		glBegin(GL_LINE_LOOP);
+		glColor3f(1.0f,1.0f,0.0f);
+		glVertex(basePlaneCorners[0]);
+		glVertex(basePlaneCorners[1]);
+		glVertex(basePlaneCorners[3]);
+		glVertex(basePlaneCorners[2]);
+		glEnd();
+		
+		/* Draw the current 3D video facade: */
+		glColor3f(1.0f,1.0f,0.0f);
+		projector->glRenderAction(contextData);
+		
+		/* Draw all currently extracted disks: */
+		const Kinect::DiskExtractor::DiskList& dl=diskList.getLockedValue();
+		for(Kinect::DiskExtractor::DiskList::const_iterator dlIt=dl.begin();dlIt!=dl.end();++dlIt)
+			{
+			glPushMatrix();
+			glTranslate(dlIt->center-Kinect::DiskExtractor::Point::origin);
+			glRotate(Vrui::Rotation::rotateFromTo(Vrui::Vector(0,0,1),Vrui::Vector(dlIt->normal)));
+			
+			glBegin(GL_POLYGON);
+			glColor3f(0.0f,1.0f,0.0f);
+			for(int i=0;i<64;++i)
+				{
+				Vrui::Scalar angle=Vrui::Scalar(i)*Vrui::Scalar(2)*Math::Constants<Vrui::Scalar>::pi/Vrui::Scalar(64);
+				glVertex3d(Math::cos(angle)*dlIt->radius,Math::sin(angle)*dlIt->radius,0.0);
+				}
+			glEnd();
+			
+			glPopMatrix();
+			}
+		
+		/* Go to screen space: */
+		glMatrixMode(GL_PROJECTION);
+		glLoadIdentity();
+		glOrtho(0.0,double(imageSize[0]),0.0,double(imageSize[1]),-1.0,1.0);
+		glMatrixMode(GL_MODELVIEW);
+		glLoadIdentity();
+		
 		/* Calculate the screen-space position of the next tie point: */
-		int pointIndex=int(tiePoints.size());
-		int xIndex=pointIndex%numTiePoints[0];
-		int yIndex=(pointIndex/numTiePoints[0])%numTiePoints[1];
+		int xIndex=tiePointIndex%numTiePoints[0];
+		int yIndex=(tiePointIndex/numTiePoints[0])%numTiePoints[1];
 		int x=(xIndex+1)*imageSize[0]/(numTiePoints[0]+1);
 		int y=(yIndex+1)*imageSize[1]/(numTiePoints[1]+1);
 		
@@ -547,116 +577,36 @@ void CalibrateProjector::display(GLContextData& contextData) const
 		glVertex2f(float(x)+0.5f,float(imageSize[1]));
 		glEnd();
 		
-		/* Draw the current blob image: */
-		glBindTexture(GL_TEXTURE_2D,dataItem->blobImageTextureId);
-		if(dataItem->blobImageVersion!=blobImageVersion)
+		if(haveProjection)
 			{
-			/* Upload the new blob image into the texture: */
-			glTexSubImage2D(GL_TEXTURE_2D,0,0,0,frameSize[0],frameSize[1],GL_RGB,GL_UNSIGNED_BYTE,blobImage);
-			dataItem->blobImageVersion=blobImageVersion;
-			}
-		glEnable(GL_TEXTURE_2D);
-		glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_REPLACE),
-		glBegin(GL_QUADS);
-		glTexCoord2f(dataItem->texMin[0],dataItem->texMin[1]);
-		glVertex3f(0.0f,0.0f,-0.01);
-		glTexCoord2f(dataItem->texMax[0],dataItem->texMin[1]);
-		glVertex3f(float(imageSize[0]),0.0f,-0.01);
-		glTexCoord2f(dataItem->texMax[0],dataItem->texMax[1]);
-		glVertex3f(float(imageSize[0]),float(imageSize[1]),-0.01);
-		glTexCoord2f(dataItem->texMin[0],dataItem->texMax[1]);
-		glVertex3f(0.0f,float(imageSize[1]),-0.01);
-		glEnd();
-		glDisable(GL_TEXTURE_2D);
-		glBindTexture(GL_TEXTURE_2D,0);
-		
-		if(currentBlob!=0)
-			{
-			#if 0
-			
-			/* Draw the currently selected target blob: */
-			glScaled(double(imageSize[0])/double(frameSize[0]),double(imageSize[1])/double(frameSize[1]),1.0);
-			glColor3f(0.0f,1.0f,0.0f);
-			glBegin(GL_LINE_LOOP);
-			glVertex2i(currentBlob->bbMin[0],currentBlob->bbMin[1]);
-			glVertex2i(currentBlob->bbMax[0],currentBlob->bbMin[1]);
-			glVertex2i(currentBlob->bbMax[0],currentBlob->bbMax[1]);
-			glVertex2i(currentBlob->bbMin[0],currentBlob->bbMax[1]);
-			glEnd();
-			
-			#endif
-			
-			if(haveProjection)
+			/* Draw all currently extracted disks using the current calibration: */
+			for(Kinect::DiskExtractor::DiskList::const_iterator dlIt=dl.begin();dlIt!=dl.end();++dlIt)
 				{
-				/* Draw the currently selected target blob using the current calibration: */
-				glLoadIdentity();
 				Math::Matrix blob(4,1);
 				for(int i=0;i<3;++i)
-					blob(i)=currentCentroid[i];
+					blob(i)=dlIt->center[i];
 				blob(3)=1.0;
 				Math::Matrix projBlob=projection*blob;
-				double x=projBlob(0)/projBlob(3);
-				double y=projBlob(1)/projBlob(3);
+				double x=(projBlob(0)/projBlob(3)+1.0)*double(imageSize[0])/2.0;
+				double y=(projBlob(1)/projBlob(3)+1.0)*double(imageSize[1])/2.0;
 				glBegin(GL_LINES);
 				glColor3f(1.0f,0.0f,0.0f);
-				glVertex2d(x,-1.0);
-				glVertex2d(x,1.0);
-				glVertex2d(-1.0,y);
-				glVertex2d(1.0,y);
+				glVertex2d(x,0.0);
+				glVertex2d(x,double(imageSize[1]));
+				glVertex2d(0.0,y);
+				glVertex2d(double(imageSize[0]),y);
 				glEnd();
 				}
 			}
+		
+		/* Return to navigational space: */
+		glMatrixMode(GL_PROJECTION);
+		glPopMatrix();
+		glMatrixMode(GL_MODELVIEW);
+		glPopMatrix();
 		}
-	
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
 	
 	glPopAttrib();
-	}
-
-void CalibrateProjector::initContext(GLContextData& contextData) const
-	{
-	/* Create the data item: */
-	DataItem* dataItem=new DataItem;
-	contextData.addDataItem(this,dataItem);
-	
-	/* Check whether non-power-of-two-dimension textures are supported: */
-	bool haveNpotdt=GLARBTextureNonPowerOfTwo::isSupported();
-	if(haveNpotdt)
-		GLARBTextureNonPowerOfTwo::initExtension();
-	
-	/* Calculate the texture coordinate rectangle: */
-	unsigned int texSize[2];
-	if(haveNpotdt)
-		{
-		for(int i=0;i<2;++i)
-			texSize[i]=frameSize[i];
-		}
-	else
-		{
-		for(int i=0;i<2;++i)
-			for(texSize[i]=1U;texSize[i]<frameSize[i];texSize[i]<<=1)
-				;
-		}
-	for(int i=0;i<2;++i)
-		{
-		dataItem->texMin[i]=0.0f;
-		dataItem->texMax[i]=GLfloat(frameSize[i])/GLfloat(texSize[i]);
-		}
-	
-	/* Initialize the texture object: */
-	glBindTexture(GL_TEXTURE_2D,dataItem->blobImageTextureId);
-	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_BASE_LEVEL,0);
-	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAX_LEVEL,0);
-	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP);
-	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP);
-	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-	glTexImage2D(GL_TEXTURE_2D,0,GL_RGB8,texSize[0],texSize[1],0,GL_RGB,GL_UNSIGNED_BYTE,0);
-	
-	/* Protect the texture object: */
-	glBindTexture(GL_TEXTURE_2D,0);
 	}
 
 void CalibrateProjector::startBackgroundCapture(void)
@@ -665,10 +615,15 @@ void CalibrateProjector::startBackgroundCapture(void)
 	if(capturingBackground||capturingTiePoint)
 		return;
 	
-	/* Tell the Kinect camera to capture a new background frame: */
-	capturingBackground=true;
-	std::cout<<"CalibrateProjector: Capturing "<<numBackgroundFrames<<" background frames..."<<std::flush;
-	camera->captureBackground(numBackgroundFrames,true,Misc::createFunctionCall(this,&CalibrateProjector::backgroundCaptureCompleteCallback));
+	/* Check if this is a directly-connected 3D camera: */
+	Kinect::DirectFrameSource* directCamera=dynamic_cast<Kinect::DirectFrameSource*>(camera);
+	if(directCamera!=0)
+		{
+		/* Tell the 3D camera to capture a new background frame: */
+		capturingBackground=true;
+		std::cout<<"CalibrateProjector: Capturing "<<numBackgroundFrames<<" background frames..."<<std::flush;
+		directCamera->captureBackground(numBackgroundFrames,true,Misc::createFunctionCall(this,&CalibrateProjector::backgroundCaptureCompleteCallback));
+		}
 	}
 
 void CalibrateProjector::startTiePointCapture(void)
@@ -681,7 +636,6 @@ void CalibrateProjector::startTiePointCapture(void)
 	capturingTiePoint=true;
 	numCaptureFrames=numTiePointFrames;
 	std::cout<<"CalibrateProjector: Capturing "<<numTiePointFrames<<" tie point frames..."<<std::flush;
-	tiePointCombiner.reset();
 	}
 
 void CalibrateProjector::calcCalibration(void)
@@ -692,7 +646,8 @@ void CalibrateProjector::calcCalibration(void)
 	/* Process all tie points: */
 	for(std::vector<TiePoint>::iterator tpIt=tiePoints.begin();tpIt!=tiePoints.end();++tpIt)
 		{
-		std::cout<<"Tie point: "<<tpIt->p[0]<<", "<<tpIt->p[1]<<", "<<tpIt->o[0]<<", "<<tpIt->o[1]<<", "<<tpIt->o[2]<<std::endl;
+		// DEBUGGING
+		// std::cout<<"Tie point: "<<tpIt->p[0]<<", "<<tpIt->p[1]<<", "<<tpIt->o[0]<<", "<<tpIt->o[1]<<", "<<tpIt->o[2]<<std::endl;
 		
 		/* Create the tie point's associated two linear equations: */
 		double eq[2][12];
