@@ -1,7 +1,7 @@
 /***********************************************************************
 SurfaceRenderer - Class to render a surface defined by a regular grid in
 depth image space.
-Copyright (c) 2012-2016 Oliver Kreylos
+Copyright (c) 2012-2017 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -145,20 +145,39 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 				demDist=(vertexDem.z-texture2DRect(demSampler,vertexDem.xy).r)*demDistScale;\n\
 				\n";
 			}
-		else if(elevationColorMap!=0)
+		else
 			{
-			/* Add declarations for height mapping: */
-			vertexUniforms+="\
-				uniform vec4 heightColorMapPlaneEq; // Plane equation of the base plane in camera space, scaled for height map textures\n";
+			if(elevationColorMap!=0)
+				{
+				/* Add declarations for height mapping: */
+				vertexUniforms+="\
+					uniform vec4 heightColorMapPlaneEq; // Plane equation of the base plane in camera space, scaled for height map textures\n";
+				
+				vertexVaryings+="\
+					varying float heightColorMapTexCoord; // Texture coordinate for the height color map\n";
+				
+				/* Add height mapping code to vertex shader's main function: */
+				vertexMain+="\
+					/* Plug camera-space vertex into the scaled and offset base plane equation: */\n\
+					heightColorMapTexCoord=dot(heightColorMapPlaneEq,vertexCc);\n\
+					\n";
+				}
 			
-			vertexVaryings+="\
-				varying float heightColorMapTexCoord; // Texture coordinate for the height color map\n";
-			
-			/* Add height mapping code to vertex shader's main function: */
-			vertexMain+="\
-				/* Plug camera-space vertex into the scaled and offset base plane equation: */\n\
-				heightColorMapTexCoord=dot(heightColorMapPlaneEq,vertexCc);\n\
-				\n";
+			if(drawDippingBed)
+				{
+				/* Add declarations for dipping bed rendering: */
+				vertexUniforms+="\
+					uniform vec4 dippingBedPlaneEq; // Plane equation of the dipping bed\n";
+				
+				vertexVaryings+="\
+					varying float dippingBedDistance; // Vertex distance to dipping bed plane\n";
+				
+				/* Add dipping bed code to vertex shader's main function: */
+				vertexMain+="\
+					/* Plug camera-space vertex into the dipping bed equation: */\n\
+					dippingBedDistance=dot(dippingBedPlaneEq,vertexCc);\n\
+					\n";
+				}
 			}
 		
 		if(illuminate)
@@ -273,26 +292,49 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 					baseColor=mix(vec4(1.0,1.0,1.0,1.0),vec4(0.0,0.0,1.0,1.0),min(demDist,1.0));\n\
 				\n";
 			}
-		else if(elevationColorMap!=0)
-			{
-			/* Add declarations for height mapping: */
-			fragmentUniforms+="\
-				uniform sampler1D heightColorMapSampler;\n";
-			fragmentVaryings+="\
-				varying float heightColorMapTexCoord; // Texture coordinate for the height color map\n";
-			
-			/* Add height mapping code to the fragment shader's main function: */
-			fragmentMain+="\
-				/* Get the fragment's color from the height color map: */\n\
-				vec4 baseColor=texture1D(heightColorMapSampler,heightColorMapTexCoord);\n\
-				\n";
-			}
 		else
 			{
-			fragmentMain+="\
-				/* Set the surface's base color to white: */\n\
-				vec4 baseColor=vec4(1.0,1.0,1.0,1.0);\n\
-				\n";
+			if(elevationColorMap!=0)
+				{
+				/* Add declarations for height mapping: */
+				fragmentUniforms+="\
+					uniform sampler1D heightColorMapSampler;\n";
+				fragmentVaryings+="\
+					varying float heightColorMapTexCoord; // Texture coordinate for the height color map\n";
+				
+				/* Add height mapping code to the fragment shader's main function: */
+				fragmentMain+="\
+					/* Get the fragment's color from the height color map: */\n\
+					vec4 baseColor=texture1D(heightColorMapSampler,heightColorMapTexCoord);\n\
+					\n";
+				}
+			else
+				{
+				fragmentMain+="\
+					/* Set the surface's base color to white: */\n\
+					vec4 baseColor=vec4(1.0,1.0,1.0,1.0);\n\
+					\n";
+				}
+			
+			if(drawDippingBed)
+				{
+				/* Add declarations for dipping bed rendering: */
+				fragmentUniforms+="\
+					uniform float dippingBedThickness; // Thickness of dipping bed in camera-space units\n";
+				
+				fragmentVaryings+="\
+					varying float dippingBedDistance; // Vertex distance to dipping bed plane\n";
+				
+				/* Add dipping bed code to fragment shader's main function: */
+				fragmentMain+="\
+					/* Check fragment's dipping plane distance against dipping bed thickness: */\n\
+					float w=fwidth(dippingBedDistance)*1.0;\n\
+					if(dippingBedDistance<0.0)\n\
+						baseColor=mix(baseColor,vec4(1.0,0.0,0.0,1.0),smoothstep(-dippingBedThickness*0.5-w,-dippingBedThickness*0.5+w,dippingBedDistance));\n\
+					else\n\
+						baseColor=mix(vec4(1.0,0.0,0.0,1.0),baseColor,smoothstep(dippingBedThickness*0.5-w,dippingBedThickness*0.5+w,dippingBedDistance));\n\
+					\n";
+				}
 			}
 		
 		if(drawContourLines)
@@ -396,6 +438,11 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 			{
 			*(ulPtr++)=glGetUniformLocationARB(result,"pixelCornerElevationSampler");
 			*(ulPtr++)=glGetUniformLocationARB(result,"contourLineFactor");
+			}
+		if(drawDippingBed)
+			{
+			*(ulPtr++)=glGetUniformLocationARB(result,"dippingBedPlaneEq");
+			*(ulPtr++)=glGetUniformLocationARB(result,"dippingBedThickness");
 			}
 		if(illuminate)
 			{
@@ -512,6 +559,7 @@ SurfaceRenderer::SurfaceRenderer(const DepthImageRenderer* sDepthImageRenderer)
 	:depthImageRenderer(sDepthImageRenderer),
 	 drawContourLines(true),contourLineFactor(1.0f),
 	 elevationColorMap(0),
+	 drawDippingBed(false),dippingBedPlane(Plane::Vector(0,0,1),0.0f),dippingBedThickness(1),
 	 dem(0),demDistScale(1.0f),
 	 illuminate(false),
 	 waterTable(0),advectWaterTexture(false),waterOpacity(2.0f),
@@ -603,6 +651,22 @@ void SurfaceRenderer::setElevationColorMap(ElevationColorMap* newElevationColorM
 	
 	/* Set the elevation color map: */
 	elevationColorMap=newElevationColorMap;
+	}
+
+void SurfaceRenderer::setDrawDippingBed(bool newDrawDippingBed)
+	{
+	drawDippingBed=newDrawDippingBed;
+	++surfaceSettingsVersion;
+	}
+
+void SurfaceRenderer::setDippingBedPlane(const SurfaceRenderer::Plane& newDippingBedPlane)
+	{
+	dippingBedPlane=newDippingBedPlane;
+	}
+
+void SurfaceRenderer::setDippingBedThickness(GLfloat newDippingBedThickness)
+	{
+	dippingBedThickness=newDippingBedThickness;
 	}
 
 void SurfaceRenderer::setDem(DEM* newDem)
@@ -744,6 +808,19 @@ void SurfaceRenderer::renderSinglePass(const int viewport[4],const PTransform& p
 		
 		/* Upload the contour line distance factor: */
 		glUniform1fARB(*(ulPtr++),contourLineFactor);
+		}
+	
+	if(drawDippingBed)
+		{
+		/* Upload the dipping bed plane equation: */
+		GLfloat planeEq[4];
+		for(int i=0;i<3;++i)
+			planeEq[i]=dippingBedPlane.getNormal()[i];
+		planeEq[3]=-dippingBedPlane.getOffset();
+		glUniformARB<4>(*(ulPtr++),1,planeEq);
+		
+		/* Upload the dipping bed thickness: */
+		glUniform1fARB(*(ulPtr++),dippingBedThickness);
 		}
 	
 	if(illuminate)

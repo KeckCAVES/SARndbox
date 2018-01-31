@@ -1,6 +1,6 @@
 ========================================================================
-README for Augmented Reality Sandbox (SARndbox) version 2.3
-Copyright (c) 2012-2016 Oliver Kreylos
+README for Augmented Reality Sandbox (SARndbox) version 2.4
+Copyright (c) 2012-2018 Oliver Kreylos
 ========================================================================
 
 Overview
@@ -15,8 +15,8 @@ surface using a calibrated projector.
 Requirements
 ============
 
-The Augmented Reality Sandbox requires Vrui version 4.2 build 001 or
-newer, and the Kinect 3D Video Capture Project version 3.2 or newer.
+The Augmented Reality Sandbox requires Vrui version 4.4 build 001 or
+newer, and the Kinect 3D Video Capture Project version 3.4 or newer.
 
 Installation Guide
 ==================
@@ -42,7 +42,7 @@ references to ~/src in the following instructions need to be changed.
 2. Change into the Augmented Reality Sandbox's base directory:
    > cd SARndbox-<version>
 
-3. If the Vrui version installed in step 0 was not 4.2, or Vrui's
+3. If the Vrui version installed in step 0 was not 4.4, or Vrui's
    installation directory was changed from the default of /usr/local,
    adapt the makefile using a text editor. Change the value of
    VRUI_MAKEDIR close to the beginning of the file as follows:
@@ -86,7 +86,10 @@ be performed in order:
 1. (Optional) Calculate per-pixel depth correction coefficients for the
    Kinect camera.
 
-2. (Optional) Internally calibrate the Kinect camera.
+2. (Optional) Internally calibrate the Kinect camera. We strongly
+   recommend skipping this step on initial installation, and only
+   performing it if there are intolerable offsets between the real sand
+   surface in the AR Sandbox and the projected topographic image.
 
 3. Mount the Kinect camera above the sandbox so that it is looking
    straight down, and can see the entire sand surface. Use
@@ -405,7 +408,7 @@ The exact procedure is as follows:
    projector, or the resulting calibration will be defective. See the
    Vrui user's manual on how to force Vrui applications to run at the
    proper position and size. Alternatively, switch CalibrateProjector
-   into full-screen mode manually by pressing the Win+f key combination.
+   into full-screen mode manually by pressing the F11 function key.
    
    When started, CalibrateProjector must be told the exact pixel size of
    the projector's image using the -s <width> <height> command line
@@ -478,16 +481,18 @@ At this point, calibration is complete. It is now possible to run the
 main Augmented Reality Sandbox application from inside the source code
 directory (or the -- optionally chosen -- installation directory):
 
-> ./bin/SARndbox -fpv
+> ./bin/SARndbox -uhm -fpv
 
-The -fpv option tells the AR Sandbox to use the projector calibration
-matrix created in step 7.
+The -fpv ("fix projector view") option tells the AR Sandbox to use the
+projector calibration matrix created in step 7. The -uhm ("Use Height
+Map") option tells the AR Sandbox to color-map the 3D surface by
+elevation, using the default height color map.
 
 It is very important to run the application in full-screen mode on the
 projector, or at least with the exact same window position and size as
 CalibrateProjector in step 7. If this is not done correctly, the
 calibration will not work as desired. To manually switch SARndbox into
-full-screen mode after start-up, press the Win+f key combination.
+full-screen mode after start-up, press the F11 function key.
 
 To check the calibration, observe how the projected colors and
 topographic contour lines exactly match the physical features of the

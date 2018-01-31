@@ -90,3 +90,15 @@ SARndbox-2.3:
 - Fixed minor scaling issues with sandbox.
 - Established better defaults for elevation and rain elevation ranges.
 - Added grid scaling option to BathymetrySaverTool.
+
+SARndbox-2.4:
+- Added support for 3D input from remote 3D video servers running a
+  KinectServer daemon.
+- Bumped Vrui version requirement to Vrui-4.4-001.
+- Bumped Kinect version requirement to Kinect-3.4.
+- Added support for second-generation Microsoft Kinect camera as well as
+  Intel RealSense cameras (and all other and future cameras supported by
+  the Kinect 3D Video package) to Sandbox and projector calibration
+  utility.
+- Rewrote projector calibration code using the Kinect::DiskExtractor
+  class for improved results, hopefully.

@@ -2,7 +2,7 @@
 DepthImageRenderer - Class to centralize storage of raw or filtered
 depth images on the GPU, and perform simple repetitive rendering tasks
 such as rendering elevation values into a frame buffer.
-Copyright (c) 2014-2016 Oliver Kreylos
+Copyright (c) 2014-2018 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -103,13 +103,31 @@ void DepthImageRenderer::initContext(GLContextData& contextData) const
 	glBindBufferARB(GL_ARRAY_BUFFER_ARB,dataItem->vertexBuffer);
 	glBufferDataARB(GL_ARRAY_BUFFER_ARB,depthImageSize[1]*depthImageSize[0]*sizeof(Vertex),0,GL_STATIC_DRAW_ARB);
 	Vertex* vPtr=static_cast<Vertex*>(glMapBufferARB(GL_ARRAY_BUFFER_ARB,GL_WRITE_ONLY_ARB));
-	for(unsigned int y=0;y<depthImageSize[1];++y)
-		for(unsigned int x=0;x<depthImageSize[0];++x,++vPtr)
-			{
-			/* Set the template vertex' position to the pixel center's position: */
-			vPtr->position[0]=GLfloat(x)+0.5f;
-			vPtr->position[1]=GLfloat(y)+0.5f;
-			}
+	if(lensDistortion.isIdentity())
+		{
+		/* Create uncorrected pixel positions: */
+		for(unsigned int y=0;y<depthImageSize[1];++y)
+			for(unsigned int x=0;x<depthImageSize[0];++x,++vPtr)
+				{
+				vPtr->position[0]=Scalar(x)+Scalar(0.5);
+				vPtr->position[1]=Scalar(y)+Scalar(0.5);
+				}
+		}
+	else
+		{
+		/* Create lens distortion-corrected pixel positions: */
+		for(unsigned int y=0;y<depthImageSize[1];++y)
+			for(unsigned int x=0;x<depthImageSize[0];++x,++vPtr)
+				{
+				/* Undistort the image point: */
+				Kinect::LensDistortion::Point dp(Kinect::LensDistortion::Scalar(x)+Kinect::LensDistortion::Scalar(0.5),Kinect::LensDistortion::Scalar(y)+Kinect::LensDistortion::Scalar(0.5));
+				Kinect::LensDistortion::Point up=lensDistortion.undistortPixel(dp);
+				
+				/* Store the undistorted point: */
+				vPtr->position[0]=Scalar(up[0]);
+				vPtr->position[1]=Scalar(up[1]);
+				}
+		}
 	glUnmapBufferARB(GL_ARRAY_BUFFER_ARB);
 	glBindBufferARB(GL_ARRAY_BUFFER_ARB,0);
 	
@@ -152,6 +170,28 @@ void DepthImageRenderer::setDepthProjection(const PTransform& newDepthProjection
 	{
 	/* Set the depth unprojection matrix: */
 	depthProjection=newDepthProjection;
+	
+	/* Convert the depth projection matrix to column-major OpenGL format: */
+	GLfloat* dpmPtr=depthProjectionMatrix;
+	for(int j=0;j<4;++j)
+		for(int i=0;i<4;++i,++dpmPtr)
+			*dpmPtr=GLfloat(depthProjection.getMatrix()(i,j));
+	
+	/* Create the weight calculation equation: */
+	for(int i=0;i<4;++i)
+		weightDicEq[i]=GLfloat(depthProjection.getMatrix()(3,i));
+	
+	/* Recalculate the base plane equation in depth image space: */
+	setBasePlane(basePlane);
+	}
+
+void DepthImageRenderer::setIntrinsics(const Kinect::FrameSource::IntrinsicParameters& ips)
+	{
+	/* Set the lens distortion parameters: */
+	lensDistortion=ips.depthLensDistortion;
+	
+	/* Set the depth unprojection matrix: */
+	depthProjection=ips.depthProjection;
 	
 	/* Convert the depth projection matrix to column-major OpenGL format: */
 	GLfloat* dpmPtr=depthProjectionMatrix;
