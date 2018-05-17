@@ -1,7 +1,7 @@
 /***********************************************************************
 SurfaceRenderer - Class to render a surface defined by a regular grid in
 depth image space.
-Copyright (c) 2012-2017 Oliver Kreylos
+Copyright (c) 2012-2018 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -166,17 +166,35 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 			if(drawDippingBed)
 				{
 				/* Add declarations for dipping bed rendering: */
-				vertexUniforms+="\
-					uniform vec4 dippingBedPlaneEq; // Plane equation of the dipping bed\n";
+				if(dippingBedFolded)
+					{
+					vertexUniforms+="\
+						uniform float dbc[5]; // Dipping bed coefficients\n";
+					}
+				else
+					{
+					vertexUniforms+="\
+						uniform vec4 dippingBedPlaneEq; // Plane equation of the dipping bed\n";
+					}
 				
 				vertexVaryings+="\
-					varying float dippingBedDistance; // Vertex distance to dipping bed plane\n";
+					varying float dippingBedDistance; // Vertex distance to dipping bed\n";
 				
 				/* Add dipping bed code to vertex shader's main function: */
-				vertexMain+="\
-					/* Plug camera-space vertex into the dipping bed equation: */\n\
-					dippingBedDistance=dot(dippingBedPlaneEq,vertexCc);\n\
-					\n";
+				if(dippingBedFolded)
+					{
+					vertexMain+="\
+						/* Calculate distance from camera-space vertex to dipping bed equation: */\n\
+						dippingBedDistance=vertexCc.z-(((1.0-dbc[3])+cos(dbc[0]*vertexCc.x)*dbc[3])*sin(dbc[1]*vertexCc.y)*dbc[2]+dbc[4]);\n\
+						\n";
+					}
+				else
+					{
+					vertexMain+="\
+						/* Plug camera-space vertex into the dipping bed equation: */\n\
+						dippingBedDistance=dot(dippingBedPlaneEq,vertexCc);\n\
+						\n";
+					}
 				}
 			}
 		
@@ -441,7 +459,10 @@ GLhandleARB SurfaceRenderer::createSinglePassSurfaceShader(const GLLightTracker&
 			}
 		if(drawDippingBed)
 			{
-			*(ulPtr++)=glGetUniformLocationARB(result,"dippingBedPlaneEq");
+			if(dippingBedFolded)
+				*(ulPtr++)=glGetUniformLocationARB(result,"dbc");
+			else
+				*(ulPtr++)=glGetUniformLocationARB(result,"dippingBedPlaneEq");
 			*(ulPtr++)=glGetUniformLocationARB(result,"dippingBedThickness");
 			}
 		if(illuminate)
@@ -559,7 +580,8 @@ SurfaceRenderer::SurfaceRenderer(const DepthImageRenderer* sDepthImageRenderer)
 	:depthImageRenderer(sDepthImageRenderer),
 	 drawContourLines(true),contourLineFactor(1.0f),
 	 elevationColorMap(0),
-	 drawDippingBed(false),dippingBedPlane(Plane::Vector(0,0,1),0.0f),dippingBedThickness(1),
+	 drawDippingBed(false),dippingBedFolded(false),
+	 dippingBedPlane(Plane::Vector(0,0,1),0.0f),dippingBedThickness(1),
 	 dem(0),demDistScale(1.0f),
 	 illuminate(false),
 	 waterTable(0),advectWaterTexture(false),waterOpacity(2.0f),
@@ -661,7 +683,29 @@ void SurfaceRenderer::setDrawDippingBed(bool newDrawDippingBed)
 
 void SurfaceRenderer::setDippingBedPlane(const SurfaceRenderer::Plane& newDippingBedPlane)
 	{
+	/* Set the dipping bed mode to planar: */
+	if(dippingBedFolded)
+		{
+		dippingBedFolded=false;
+		++surfaceSettingsVersion;
+		}
+	
+	/* Set the dipping bed's plane equation: */
 	dippingBedPlane=newDippingBedPlane;
+	}
+
+void SurfaceRenderer::setDippingBedCoeffs(const GLfloat newDippingBedCoeffs[5])
+	{
+	/* Set the dipping bed mode to folded: */
+	if(!dippingBedFolded)
+		{
+		dippingBedFolded=true;
+		++surfaceSettingsVersion;
+		}
+	
+	/* Set the dipping bed's coefficients: */
+	for(int i=0;i<5;++i)
+		dippingBedCoeffs[i]=newDippingBedCoeffs[i];
 	}
 
 void SurfaceRenderer::setDippingBedThickness(GLfloat newDippingBedThickness)
@@ -812,12 +856,20 @@ void SurfaceRenderer::renderSinglePass(const int viewport[4],const PTransform& p
 	
 	if(drawDippingBed)
 		{
-		/* Upload the dipping bed plane equation: */
-		GLfloat planeEq[4];
-		for(int i=0;i<3;++i)
-			planeEq[i]=dippingBedPlane.getNormal()[i];
-		planeEq[3]=-dippingBedPlane.getOffset();
-		glUniformARB<4>(*(ulPtr++),1,planeEq);
+		if(dippingBedFolded)
+			{
+			/* Upload the dipping bed coefficients: */
+			glUniformARB<1>(*(ulPtr++),5,dippingBedCoeffs);
+			}
+		else
+			{
+			/* Upload the dipping bed plane equation: */
+			GLfloat planeEq[4];
+			for(int i=0;i<3;++i)
+				planeEq[i]=dippingBedPlane.getNormal()[i];
+			planeEq[3]=-dippingBedPlane.getOffset();
+			glUniformARB<4>(*(ulPtr++),1,planeEq);
+			}
 		
 		/* Upload the dipping bed thickness: */
 		glUniform1fARB(*(ulPtr++),dippingBedThickness);

@@ -1,6 +1,6 @@
 /***********************************************************************
 Sandbox - Vrui application to drive an augmented reality sandbox.
-Copyright (c) 2012-2016 Oliver Kreylos
+Copyright (c) 2012-2018 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -862,14 +862,18 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	{
 	IO::ValueSource layoutSource(Vrui::openFile(sandboxLayoutFileName.c_str()));
 	layoutSource.skipWs();
+	
+	/* Read the base plane equation: */
 	std::string s=layoutSource.readLine();
 	basePlane=Misc::ValueCoder<Geometry::Plane<double,3> >::decode(s.c_str(),s.c_str()+s.length());
 	basePlane.normalize();
+	
+	/* Read the corners of the base quadrilateral and project them into the base plane: */
 	for(int i=0;i<4;++i)
 		{
 		layoutSource.skipWs();
 		s=layoutSource.readLine();
-		basePlaneCorners[i]=Misc::ValueCoder<Geometry::Point<double,3> >::decode(s.c_str(),s.c_str()+s.length());
+		basePlaneCorners[i]=basePlane.project(Misc::ValueCoder<Geometry::Point<double,3> >::decode(s.c_str(),s.c_str()+s.length()));
 		}
 	}
 	
@@ -929,22 +933,27 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	depthImageRenderer->setIntrinsics(cameraIps);
 	depthImageRenderer->setBasePlane(basePlane);
 	
-	/* Calculate the transformation from camera space to sandbox space: */
 	{
+	/* Calculate the transformation from camera space to sandbox space: */
 	ONTransform::Vector z=basePlane.getNormal();
 	ONTransform::Vector x=(basePlaneCorners[1]-basePlaneCorners[0])+(basePlaneCorners[3]-basePlaneCorners[2]);
 	ONTransform::Vector y=z^x;
 	boxTransform=ONTransform::rotate(Geometry::invert(ONTransform::Rotation::fromBaseVectors(x,y)));
 	ONTransform::Point center=Geometry::mid(Geometry::mid(basePlaneCorners[0],basePlaneCorners[1]),Geometry::mid(basePlaneCorners[2],basePlaneCorners[3]));
-	boxTransform*=ONTransform::translateToOriginFrom(basePlane.project(center));
+	boxTransform*=ONTransform::translateToOriginFrom(center);
+	
+	/* Calculate the size of the sandbox area: */
+	boxSize=Geometry::dist(center,basePlaneCorners[0]);
+	for(int i=1;i<4;++i)
+		boxSize=Math::max(boxSize,Geometry::dist(center,basePlaneCorners[i]));
 	}
 	
 	/* Calculate a bounding box around all potential surfaces: */
 	bbox=Box::empty;
 	for(int i=0;i<4;++i)
 		{
-		bbox.addPoint(basePlane.project(basePlaneCorners[i])+basePlane.getNormal()*elevationRange.getMin());
-		bbox.addPoint(basePlane.project(basePlaneCorners[i])+basePlane.getNormal()*elevationRange.getMax());
+		bbox.addPoint(basePlaneCorners[i]+basePlane.getNormal()*elevationRange.getMin());
+		bbox.addPoint(basePlaneCorners[i]+basePlane.getNormal()*elevationRange.getMax());
 		}
 	
 	if(waterSpeed>0.0)
@@ -1031,20 +1040,6 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	
 	/* Set the linear unit to support proper scaling: */
 	Vrui::getCoordinateManager()->setUnit(Geometry::LinearUnit(Geometry::LinearUnit::METER,scale/100.0));
-	
-	/* Initialize the navigation transformation: */
-	Vrui::Point::AffineCombiner cc;
-	for(int i=0;i<4;++i)
-		cc.addPoint(Vrui::Point(basePlane.project(basePlaneCorners[i])));
-	navCenter=cc.getPoint();
-	navSize=Vrui::Scalar(0);
-	for(int i=0;i<4;++i)
-		{
-		Vrui::Scalar dist=Geometry::dist(Vrui::Point(basePlane.project(basePlaneCorners[i])),navCenter);
-		if(navSize<dist)
-			navSize=dist;
-		}
-	navUp=Geometry::normal(Vrui::Vector(basePlane.getNormal()));
 	}
 
 Sandbox::~Sandbox(void)
@@ -1076,6 +1071,55 @@ void Sandbox::toolDestructionCallback(Vrui::ToolManager::ToolDestructionCallback
 		activeDem=0;
 		}
 	}
+
+namespace {
+
+/****************
+Helper functions:
+****************/
+
+std::vector<std::string> tokenizeLine(const char*& buffer)
+	{
+	std::vector<std::string> result;
+	
+	/* Skip initial whitespace but not end-of-line: */
+	const char* bPtr=buffer;
+	while(*bPtr!='\0'&&*bPtr!='\n'&&isspace(*bPtr))
+		++bPtr;
+	
+	/* Extract white-space separated tokens until a newline or end-of-string are encountered: */
+	while(*bPtr!='\0'&&*bPtr!='\n')
+		{
+		/* Remember the start of the current token: */
+		const char* tokenStart=bPtr;
+		
+		/* Find the end of the current token: */
+		while(*bPtr!='\0'&&!isspace(*bPtr))
+			++bPtr;
+		
+		/* Extract the token: */
+		result.push_back(std::string(tokenStart,bPtr));
+		
+		/* Skip whitespace but not end-of-line: */
+		while(*bPtr!='\0'&&*bPtr!='\n'&&isspace(*bPtr))
+			++bPtr;
+		}
+	
+	/* Skip end-of-line: */
+	if(*bPtr=='\n')
+		++bPtr;
+	
+	/* Set the start of the next line and return the token list: */
+	buffer=bPtr;
+	return result;
+	}
+
+bool isToken(const std::string& token,const char* pattern)
+	{
+	return strcasecmp(token.c_str(),pattern)==0;
+	}
+
+}
 
 void Sandbox::frame(void)
 	{
@@ -1115,115 +1159,157 @@ void Sandbox::frame(void)
 	if(controlPipeFd>=0)
 		{
 		/* Try reading a chunk of data (will fail with EAGAIN if no data due to non-blocking access): */
-		char command[1024];
-		ssize_t readResult=read(controlPipeFd,command,sizeof(command)-1);
+		char commandBuffer[1024];
+		ssize_t readResult=read(controlPipeFd,commandBuffer,sizeof(commandBuffer)-1);
 		if(readResult>0)
 			{
-			command[readResult]='\0';
+			commandBuffer[readResult]='\0';
 			
-			/* Extract the command: */
-			char* cPtr;
-			for(cPtr=command;*cPtr!='\0'&&!isspace(*cPtr);++cPtr)
-				;
-			char* commandEnd=cPtr;
-			
-			/* Find the beginning of an optional command parameter: */
-			while(*cPtr!='\0'&&isspace(*cPtr))
-				++cPtr;
-			char* parameter=cPtr;
-			
-			/* Find the end of the optional parameter list: */
+			/* Extract commands line-by-line: */
+			const char* cPtr=commandBuffer;
 			while(*cPtr!='\0')
-				++cPtr;
-			while(cPtr>parameter&&isspace(cPtr[-1]))
-				--cPtr;
-			*cPtr='\0';
-			
-			/* Parse the command: */
-			*commandEnd='\0';
-			if(strcasecmp(command,"waterSpeed")==0)
 				{
-				waterSpeed=atof(parameter);
-				if(waterSpeedSlider!=0)
-					waterSpeedSlider->setValue(waterSpeed);
-				}
-			else if(strcasecmp(command,"waterMaxSteps")==0)
-				{
-				waterMaxSteps=atoi(parameter);
-				if(waterMaxStepsSlider!=0)
-					waterMaxStepsSlider->setValue(waterMaxSteps);
-				}
-			else if(strcasecmp(command,"waterAttenuation")==0)
-				{
-				double attenuation=atof(parameter);
-				if(waterTable!=0)
-					waterTable->setAttenuation(GLfloat(1.0-attenuation));
-				if(waterAttenuationSlider!=0)
-					waterAttenuationSlider->setValue(attenuation);
-				}
-			else if(strcasecmp(command,"colorMap")==0)
-				{
-				try
-					{
-					/* Update all height color maps: */
-					for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
-						if(rsIt->elevationColorMap!=0)
-							rsIt->elevationColorMap->load(parameter);
-					}
-				catch(std::runtime_error err)
-					{
-					std::cerr<<"Cannot read height color map "<<parameter<<" due to exception "<<err.what()<<std::endl;
-					}
-				}
-			else if(strcasecmp(command,"heightMapPlane")==0)
-				{
-				/* Read the height map plane equation: */
-				double hmp[4];
-				char* endPtr=parameter;
-				for(int i=0;i<4;++i)
-					hmp[i]=strtod(endPtr,&endPtr);
-				Plane heightMapPlane=Plane(Plane::Vector(hmp),hmp[3]);
-				heightMapPlane.normalize();
+				/* Split the current line into tokens and skip empty lines: */
+				std::vector<std::string> tokens=tokenizeLine(cPtr);
+				if(tokens.empty())
+					continue;
 				
-				/* Override the height mapping planes of all elevation color maps: */
-				for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
-					if(rsIt->elevationColorMap!=0)
-						rsIt->elevationColorMap->calcTexturePlane(heightMapPlane);
-				}
-			else if(strcasecmp(command,"dippingBed")==0)
-				{
-				if(strcasecmp(parameter,"off")==0)
+				/* Parse the command: */
+				if(isToken(tokens[0],"waterSpeed"))
 					{
-					/* Disable dipping bed rendering on all surface renderers: */
-					for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
-						rsIt->surfaceRenderer->setDrawDippingBed(false);
+					if(tokens.size()==2)
+						{
+						waterSpeed=atof(tokens[1].c_str());
+						if(waterSpeedSlider!=0)
+							waterSpeedSlider->setValue(waterSpeed);
+						}
+					else
+						std::cerr<<"Wrong number of arguments for waterSpeed control pipe command"<<std::endl;
+					}
+				else if(isToken(tokens[0],"waterMaxSteps"))
+					{
+					if(tokens.size()==2)
+						{
+						waterMaxSteps=atoi(tokens[1].c_str());
+						if(waterMaxStepsSlider!=0)
+							waterMaxStepsSlider->setValue(waterMaxSteps);
+						}
+					else
+						std::cerr<<"Wrong number of arguments for waterMaxSteps control pipe command"<<std::endl;
+					}
+				else if(isToken(tokens[0],"waterAttenuation"))
+					{
+					if(tokens.size()==2)
+						{
+						double attenuation=atof(tokens[1].c_str());
+						if(waterTable!=0)
+							waterTable->setAttenuation(GLfloat(1.0-attenuation));
+						if(waterAttenuationSlider!=0)
+							waterAttenuationSlider->setValue(attenuation);
+						}
+					else
+						std::cerr<<"Wrong number of arguments for waterAttenuation control pipe command"<<std::endl;
+					}
+				else if(isToken(tokens[0],"colorMap"))
+					{
+					if(tokens.size()==2)
+						{
+						try
+							{
+							/* Update all height color maps: */
+							for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+								if(rsIt->elevationColorMap!=0)
+									rsIt->elevationColorMap->load(tokens[1].c_str());
+							}
+						catch(std::runtime_error err)
+							{
+							std::cerr<<"Cannot read height color map "<<tokens[1]<<" due to exception "<<err.what()<<std::endl;
+							}
+						}
+					else
+						std::cerr<<"Wrong number of arguments for colorMap control pipe command"<<std::endl;
+					}
+				else if(isToken(tokens[0],"heightMapPlane"))
+					{
+					if(tokens.size()==5)
+						{
+						/* Read the height map plane equation: */
+						double hmp[4];
+						for(int i=0;i<4;++i)
+							hmp[i]=atof(tokens[1+i].c_str());
+						Plane heightMapPlane=Plane(Plane::Vector(hmp),hmp[3]);
+						heightMapPlane.normalize();
+						
+						/* Override the height mapping planes of all elevation color maps: */
+						for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+							if(rsIt->elevationColorMap!=0)
+								rsIt->elevationColorMap->calcTexturePlane(heightMapPlane);
+						}
+					else
+						std::cerr<<"Wrong number of arguments for heightMapPlane control pipe command"<<std::endl;
+					}
+				else if(isToken(tokens[0],"dippingBed"))
+					{
+					if(tokens.size()==2&&isToken(tokens[1],"off"))
+						{
+						/* Disable dipping bed rendering on all surface renderers: */
+						for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+							rsIt->surfaceRenderer->setDrawDippingBed(false);
+						}
+					else if(tokens.size()==5)
+						{
+						/* Read the dipping bed plane equation: */
+						GLfloat dbp[4];
+						for(int i=0;i<4;++i)
+							dbp[i]=GLfloat(atof(tokens[1+i].c_str()));
+						SurfaceRenderer::Plane dippingBedPlane=SurfaceRenderer::Plane(SurfaceRenderer::Plane::Vector(dbp),dbp[3]);
+						dippingBedPlane.normalize();
+						
+						/* Enable dipping bed rendering and set the dipping bed plane equation on all surface renderers: */
+						for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+							{
+							rsIt->surfaceRenderer->setDrawDippingBed(true);
+							rsIt->surfaceRenderer->setDippingBedPlane(dippingBedPlane);
+							}
+						}
+					else
+						std::cerr<<"Wrong number of arguments for dippingBed control pipe command"<<std::endl;
+					}
+				else if(isToken(tokens[0],"foldedDippingBed"))
+					{
+					if(tokens.size()==6)
+						{
+						/* Read the dipping bed coefficients: */
+						GLfloat dbc[5];
+						for(int i=0;i<5;++i)
+							dbc[i]=GLfloat(atof(tokens[1+i].c_str()));
+						
+						/* Enable dipping bed rendering and set the dipping bed coefficients on all surface renderers: */
+						for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+							{
+							rsIt->surfaceRenderer->setDrawDippingBed(true);
+							rsIt->surfaceRenderer->setDippingBedCoeffs(dbc);
+							}
+						}
+					else
+						std::cerr<<"Wrong number of arguments for foldedDippingBed control pipe command"<<std::endl;
+					}
+				else if(isToken(tokens[0],"dippingBedThickness"))
+					{
+					if(tokens.size()==2)
+						{
+						/* Read the dipping bed thickness: */
+						float dippingBedThickness=float(atof(tokens[1].c_str()));
+						
+						/* Set the dipping bed thickness on all surface renderers: */
+						for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+							rsIt->surfaceRenderer->setDippingBedThickness(dippingBedThickness);
+						}
+					else
+						std::cerr<<"Wrong number of arguments for dippingBedThickness control pipe command"<<std::endl;
 					}
 				else
-					{
-					/* Read the dipping bed plane equation: */
-					GLfloat dbp[4];
-					char* endPtr=parameter;
-					for(int i=0;i<4;++i)
-						dbp[i]=GLfloat(strtod(endPtr,&endPtr));
-					SurfaceRenderer::Plane dippingBedPlane=SurfaceRenderer::Plane(SurfaceRenderer::Plane::Vector(dbp),dbp[3]);
-					dippingBedPlane.normalize();
-					
-					/* Enable dipping bed rendering and set the dipping bed plane equation on all surface renderers: */
-					for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
-						{
-						rsIt->surfaceRenderer->setDrawDippingBed(true);
-						rsIt->surfaceRenderer->setDippingBedPlane(dippingBedPlane);
-						}
-					}
-				}
-			else if(strcasecmp(command,"dippingBedThickness")==0)
-				{
-				/* Read the dipping bed thickness: */
-				float dippingBedThickness=float(atof(parameter));
-				
-				/* Set the dipping bed thickness on all surface renderers: */
-				for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
-					rsIt->surfaceRenderer->setDippingBedThickness(dippingBedThickness);
+					std::cerr<<"Unrecognized control pipe command "<<tokens[0]<<std::endl;
 				}
 			}
 		}
@@ -1487,8 +1573,15 @@ void Sandbox::display(GLContextData& contextData) const
 
 void Sandbox::resetNavigation(void)
 	{
-	/* Set the navigation transformation from the previously computed parameters: */
-	Vrui::setNavigationTransformation(navCenter,navSize,navUp);
+	/* Construct a navigation transformation to center the sandbox area in the display, facing the viewer, with the long sandbox axis facing to the right: */
+	Vrui::NavTransform nav=Vrui::NavTransform::translateFromOriginTo(Vrui::getDisplayCenter());
+	nav*=Vrui::NavTransform::scale(Vrui::getDisplaySize()/boxSize);
+	Vrui::Vector y=Vrui::getUpDirection();
+	Vrui::Vector z=Vrui::getForwardDirection();
+	Vrui::Vector x=z^y;
+	nav*=Vrui::NavTransform::rotate(Vrui::Rotation::fromBaseVectors(x,y));
+	nav*=boxTransform;
+	Vrui::setNavigationTransformation(nav);
 	}
 
 void Sandbox::eventCallback(Vrui::Application::EventID eventId,Vrui::InputDevice::ButtonCallbackData* cbData)

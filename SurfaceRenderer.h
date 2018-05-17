@@ -1,7 +1,7 @@
 /***********************************************************************
 SurfaceRenderer - Class to render a surface defined by a regular grid in
 depth image space.
-Copyright (c) 2012-2017 Oliver Kreylos
+Copyright (c) 2012-2018 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -82,7 +82,9 @@ class SurfaceRenderer:public GLObject
 	ElevationColorMap* elevationColorMap; // Pointer to a color map for topographic elevation map coloring
 	
 	bool drawDippingBed; // Flag to draw a potentially dipping bedding plane
-	Plane dippingBedPlane; // Plane equation of the dipping bed
+	bool dippingBedFolded; // Flag whether the dipping bed is folded or planar
+	Plane dippingBedPlane; // Plane equation of the planar dipping bed
+	GLfloat dippingBedCoeffs[5]; // Coefficients of folded dipping bed
 	GLfloat dippingBedThickness; // Thickness of dipping bed in camera-space units
 	
 	DEM* dem; // Pointer to a pre-made digital elevation model to create a zero-surface for height color mapping
@@ -115,6 +117,7 @@ class SurfaceRenderer:public GLObject
 	void setElevationColorMap(ElevationColorMap* newElevationColorMap); // Sets an elevation color map
 	void setDrawDippingBed(bool newDrawDippingBed); // Sets the dipping bed flag
 	void setDippingBedPlane(const Plane& newDippingBedPlane); // Sets the dipping bed plane equation
+	void setDippingBedCoeffs(const GLfloat newDippingBedCoeffs[5]); // Sets folding dipping bed's coefficients
 	void setDippingBedThickness(GLfloat newDippingBedThickness); // Sets the thickness of the dipping bed in camera-space units
 	void setDem(DEM* newDem); // Sets a pre-made digital elevation model to create a zero surface for height color mapping
 	void setDemDistScale(GLfloat newDemDistScale); // Sets the deviation from DEM to surface to saturate the deviation color map
