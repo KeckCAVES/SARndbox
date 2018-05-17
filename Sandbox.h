@@ -1,6 +1,6 @@
 /***********************************************************************
 Sandbox - Vrui application to drive an augmented reality sandbox.
-Copyright (c) 2012-2016 Oliver Kreylos
+Copyright (c) 2012-2018 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 #include <Threads/TripleBuffer.h>
 #include <Geometry/Box.h>
+#include <Geometry/Rotation.h>
 #include <Geometry/OrthonormalTransformation.h>
 #include <Geometry/ProjectiveTransformation.h>
 #include <GL/gl.h>
@@ -134,7 +135,8 @@ class Sandbox:public Vrui::Application,public GLObject
 	Threads::TripleBuffer<Kinect::FrameBuffer> filteredFrames; // Triple buffer for incoming filtered depth frames
 	DepthImageRenderer* depthImageRenderer; // Object managing the current filtered depth image
 	ONTransform boxTransform; // Transformation from camera space to baseplane space (x along long sandbox axis, z up)
-	Box bbox; // Bounding box around the surface
+	Scalar boxSize; // Radius of sphere around sandbox area
+	Box bbox; // Bounding box around all potential surfaces
 	WaterTable2* waterTable; // Water flow simulation object
 	double waterSpeed; // Relative speed of water flow simulation
 	unsigned int waterMaxSteps; // Maximum number of water simulation steps per frame
@@ -144,9 +146,6 @@ class Sandbox:public Vrui::Application,public GLObject
 	bool addWaterFunctionRegistered; // Flag if the water adding function is currently registered with the water table
 	std::vector<RenderSettings> renderSettings; // List of per-window rendering settings
 	Vrui::Lightsource* sun; // An external fixed light source
-	Vrui::Point navCenter;
-	Vrui::Scalar navSize;
-	Vrui::Vector navUp;
 	DEM* activeDem; // The currently active DEM
 	GLMotif::PopupMenu* mainMenu;
 	GLMotif::ToggleButton* pauseUpdatesToggle;

@@ -102,3 +102,12 @@ SARndbox-2.4:
   utility.
 - Rewrote projector calibration code using the Kinect::DiskExtractor
   class for improved results, hopefully.
+
+SARndbox-2.5:
+- Bumped Vrui version requirement to Vrui-4.5-001.
+- Bumped Kinect version requirement to Kinect-3.5.
+- Fixed GlobalWaterTool by remembering amount of water added or removed
+  on button press, to avoid issues if waterSpeed is changed while button
+  is pressed.
+- Added handling of multi-line commands on the control pipe and simple
+  error checking.

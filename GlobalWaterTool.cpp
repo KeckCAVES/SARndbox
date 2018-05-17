@@ -1,7 +1,7 @@
 /***********************************************************************
 GlobalWaterTool - Tool class to globally add or remove water from an
 augmented reality sandbox.
-Copyright (c) 2012-2013 Oliver Kreylos
+Copyright (c) 2012-2018 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -68,10 +68,26 @@ const Vrui::ToolFactory* GlobalWaterTool::getFactory(void) const
 
 void GlobalWaterTool::buttonCallback(int buttonSlotIndex,Vrui::InputDevice::ButtonCallbackData* cbData)
 	{
-	GLfloat waterAmount=application->rainStrength/application->waterSpeed;
-	if(!cbData->newButtonState)
-		waterAmount=-waterAmount;
-	if(buttonSlotIndex==1)
-		waterAmount=-waterAmount;
+	/* Calculate the amount of water to add/remove: */
+	float waterAmount;
+	if(cbData->newButtonState) // Button was just pressed
+		{
+		/* Add fixed amount of water/second: */
+		waterAmount=application->waterSpeed>0.0?application->rainStrength/application->waterSpeed:0.0f;
+		
+		/* Invert water amount for drain button: */
+		if(buttonSlotIndex==1)
+			waterAmount=-waterAmount;
+		
+		/* Remember amount for button release event: */
+		waterAmounts[buttonSlotIndex]=waterAmount;
+		}
+	else // Button was just released
+		{
+		/* Invert the water amount added when button was pressed: */
+		waterAmount=-waterAmounts[buttonSlotIndex];
+		}
+	
+	/* Add water amount to water table: */
 	application->waterTable->setWaterDeposit(application->waterTable->getWaterDeposit()+waterAmount);
 	}
