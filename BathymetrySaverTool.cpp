@@ -1,7 +1,7 @@
 /***********************************************************************
 BathymetrySaverTool - Tool to save the current bathymetry grid of an
 augmented reality sandbox to a file or network socket.
-Copyright (c) 2016 Oliver Kreylos
+Copyright (c) 2016-2018 Oliver Kreylos
 
 This file is part of the Augmented Reality Sandbox (SARndbox).
 
@@ -643,7 +643,7 @@ void BathymetrySaverTool::frame(void)
 				postUpdate();
 				}
 			}
-		catch(std::runtime_error err)
+		catch(const std::runtime_error& err)
 			{
 			Misc::formattedUserError("Save Bathymetry: Unable to save bathymetry due to exception \"%s\"",err.what());
 			}
