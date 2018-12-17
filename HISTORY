@@ -111,3 +111,7 @@ SARndbox-2.5:
   is pressed.
 - Added handling of multi-line commands on the control pipe and simple
   error checking.
+
+SARndbox-2.6:
+- Bumped Vrui version requirement to Vrui-4.6-005.
+- Bumped Kinect version requirement to Kinect-3.7.
